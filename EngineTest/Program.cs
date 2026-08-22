@@ -705,5 +705,45 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
     Check("motion proceeds normally, final X30 Z-10", Math.Abs(sim.X - 30) < 0.01 && Math.Abs(sim.Z - (-10)) < 0.01);
 }
 
+// 43. #5001/#5002 read the current work-coordinate X/Z position - the gap O0011's modal-macro
+// demo had to work around by smuggling Z through a common variable instead.
+{
+    var sim = new LatheSimulator();
+    var program = "G21\nT0101\nG00 X30 Z-10\n#101=#5001\n#102=#5002\nM30\n";
+    var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
+    Console.WriteLine("[43] #5001/#5002 read current X/Z position");
+    Check("no alarms", alarms.Count == 0);
+    Check("#5001 captured X30", Math.Abs((sim.GetCommonVariableRows().Find(r => r.Variable == "#101")?.Value ?? -1) - 30) < 0.01);
+    Check("#5002 captured Z-10", Math.Abs((sim.GetCommonVariableRows().Find(r => r.Variable == "#102")?.Value ?? 1) - (-10)) < 0.01);
+}
+
+// 44. #4001 reads the active motion modal group (0/1/2/3 for G00/G01/G02/G03).
+{
+    var sim = new LatheSimulator();
+    var program = "G21\nT0101\n" +
+        "G00 X30 Z2\n#110=#4001\n" +
+        "G01 X30 Z-5 F0.1\n#111=#4001\n" +
+        "G02 X30 Z-10 R5 F0.1\n#112=#4001\n" +
+        "G01 X30 Z-15 F0.1\n" +
+        "G03 X30 Z-20 R5 F0.1\n#113=#4001\n" +
+        "M30\n";
+    var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
+    Console.WriteLine("[44] #4001 reads active motion modal group");
+    Check("no alarms", alarms.Count == 0);
+    Check("#4001 == 0 after G00", Math.Abs((sim.GetCommonVariableRows().Find(r => r.Variable == "#110")?.Value ?? -1) - 0) < 0.01);
+    Check("#4001 == 1 after G01", Math.Abs((sim.GetCommonVariableRows().Find(r => r.Variable == "#111")?.Value ?? -1) - 1) < 0.01);
+    Check("#4001 == 2 after G02", Math.Abs((sim.GetCommonVariableRows().Find(r => r.Variable == "#112")?.Value ?? -1) - 2) < 0.01);
+    Check("#4001 == 3 after G03", Math.Abs((sim.GetCommonVariableRows().Find(r => r.Variable == "#113")?.Value ?? -1) - 3) < 0.01);
+}
+
+// 45. Writing to any system variable is rejected with alarm 115 (read-only), not silently accepted.
+{
+    var sim = new LatheSimulator();
+    var program = "G21\nT0101\n#5001=1\nM30\n";
+    var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
+    Console.WriteLine("[45] Writing to a system variable raises alarm 115");
+    Check("alarm 115 raised", alarms.Exists(a => a.Number == 115));
+}
+
 Console.WriteLine();
 Console.WriteLine($"===== TOTAL: {pass} passed, {fail} failed =====");

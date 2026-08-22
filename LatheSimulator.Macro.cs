@@ -13,13 +13,15 @@ namespace FanucSimulator
         public double? Value { get; set; }
     }
 
-    // Custom Macro B support: user variables (#1-33 local, #100-999 common), [...] arithmetic
+    // Custom Macro B support: user variables (#1-33 local, #100-999 common), a handful of read-only
+    // system variables (#4001 active motion mode, #5001-#5002 current X/Z - added because a real
+    // macro turned out to need "where am I", not a general #1000+ implementation), [...] arithmetic
     // expressions, IF/GOTO/WHILE-DO-END branching with AND/OR-joined compound conditions, and
-    // G65/G66/G67 macro calls (single and modal). System variables (#1000+), indirect addressing
-    // (#[expr]), and multiple statements per block are deliberately out of scope - see the plan
-    // this was built from for the reasoning. Local variables are scoped per G65/G66 call level and
-    // saved/restored across nested calls; M98 subprograms deliberately do NOT get their own scope,
-    // matching real FANUC behavior where only custom macro calls create a new local variable frame.
+    // G65/G66/G67 macro calls (single and modal). Indirect addressing (#[expr]) and multiple
+    // statements per block are deliberately out of scope - see the plan this was built from for the
+    // reasoning. Local variables are scoped per G65/G66 call level and saved/restored across nested
+    // calls; M98 subprograms deliberately do NOT get their own scope, matching real FANUC behavior
+    // where only custom macro calls create a new local variable frame.
     public partial class LatheSimulator
     {
         private const int MaxMacroCallDepth = 8;
@@ -61,6 +63,20 @@ namespace FanucSimulator
 
         // ---- Variable read/write ----
 
+        // Read-only system variables - deliberately just the handful that came up as a real need
+        // (O0011's modal-macro demo had to smuggle the target Z through a common variable
+        // specifically because there was no way for a macro to ask "where am I"). Not a general
+        // #1000+ system variable implementation - see the class doc comment for the scope line.
+        private double? GetSystemVariable(int number) => number switch
+        {
+            4001 => (int)Modal.Motion, // active motion modal group: G00=0 G01=1 G02=2 G03=3 (MotionMode's own enum order)
+            5001 => X,
+            5002 => Z,
+            _ => null,
+        };
+
+        private static bool IsSystemVariable(int number) => number == 4001 || number == 5001 || number == 5002;
+
         // Null (#0, or any never-assigned variable) reads as "no value" - callers that care about
         // that distinction (EvaluateCondition's EQ/NE-against-null handling) use this directly;
         // everywhere else (arithmetic) an unset variable simply reads as 0 via GetVariableOrZero.
@@ -68,12 +84,14 @@ namespace FanucSimulator
         {
             if (number == 0)
                 return null;
+            if (IsSystemVariable(number))
+                return GetSystemVariable(number);
             if (number >= 1 && number <= 33)
                 return CurrentLocals[number];
             if (number >= 100 && number <= 999)
                 return _commonVars[number];
 
-            Alarms.Add(new Alarm(115, $"Macro: #{number} is outside the supported range (1-33, 100-999)"));
+            Alarms.Add(new Alarm(115, $"Macro: #{number} is outside the supported range (1-33, 100-999, 4001, 5001-5002)"));
             return null;
         }
 
@@ -84,6 +102,11 @@ namespace FanucSimulator
             if (number == 0)
             {
                 Messages.Add("Macro: #0 is always null - assignment ignored");
+                return;
+            }
+            if (IsSystemVariable(number))
+            {
+                Alarms.Add(new Alarm(115, $"Macro: #{number} is a read-only system variable"));
                 return;
             }
             if (number >= 1 && number <= 33)
