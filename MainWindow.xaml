@@ -425,8 +425,15 @@
                                 <RowDefinition Height="*"/>
                             </Grid.RowDefinitions>
                             <TextBlock Grid.Row="0" Text="ACTIVE ALARMS" Style="{StaticResource ScreenFieldLabel}" Margin="0,0,0,4"/>
-                            <ListBox x:Name="AlarmList" Grid.Row="1" Background="{StaticResource ScreenBg}" Foreground="{StaticResource AlarmRed}"
-                                     BorderBrush="{StaticResource ScreenBorder}" FontWeight="Bold"/>
+                            <DataGrid x:Name="AlarmList" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
+                                      Background="{StaticResource ScreenBg}" Foreground="{StaticResource AlarmRed}" RowBackground="{StaticResource ScreenBg}"
+                                      AlternatingRowBackground="{StaticResource ScreenAltRow}" BorderBrush="{StaticResource ScreenBorder}" GridLinesVisibility="Horizontal"
+                                      HorizontalGridLinesBrush="{StaticResource ScreenBorder}" CanUserAddRows="False" FontWeight="Bold">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="No." Binding="{Binding Number}" Width="50"/>
+                                    <DataGridTextColumn Header="Message" Binding="{Binding Message}" Width="*"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
                         </Grid>
 
                         <!-- MACRO screen: Custom Macro B variable viewer -->

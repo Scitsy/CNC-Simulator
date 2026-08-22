@@ -1033,7 +1033,10 @@ namespace FanucSimulator
 
         private void RefreshAlarmList()
         {
-            AlarmList.ItemsSource = _sim.Alarms.Select(a => a.ToString()).ToList();
+            // Bound directly to the Alarm objects (Number/Message as separate DataGrid columns) so
+            // alarm numbers line up in a column instead of running together in one string - was a
+            // plain ListBox of a.ToString() before, harder to scan with more than one alarm active.
+            AlarmList.ItemsSource = _sim.Alarms;
             StatusAlarmBadge.Visibility = _sim.Alarms.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         }
 
