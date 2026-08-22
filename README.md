@@ -76,17 +76,15 @@ A few worth starting with:
 ## Testing
 
 `EngineTest/` is a headless console harness (source-linked against the same engine files, no test
-framework dependency) with 167 hand-rolled assertions covering every documented G/M-code, both
-canned-cycle directions, macro control flow, and geometry checks against several of the demo
-programs above.
+framework dependency) with 174 hand-rolled assertions covering every documented G/M-code, both
+canned-cycle directions, macro control flow, geometry checks against several of the demo programs
+above, and the catalog-persistence round-trip. Runs automatically on every push via GitHub Actions
+(see the badge at the top of this file).
 
 ```bash
 cd EngineTest
 dotnet run
 ```
-
-Two pre-existing checks around collision-detection edge cases are known-failing and tracked
-separately from everything else.
 
 ## Project layout
 
@@ -102,7 +100,12 @@ separately from everything else.
 ## Scope
 
 This models a 2-axis turning center closely enough to be useful for learning and testing programs,
-not a certified twin of any real control. Notably out of scope: live time-based motion simulation
-(feed rate affects carving order, not simulated duration), Custom Macro B indirect addressing
-(`#[expr]`) and multiple statements per block, and general system variables beyond the three listed
-above.
+not a certified twin of any real control. Not currently modeled: live time-based motion simulation
+(feed rate affects carving order, not simulated duration - on the wishlist), Custom Macro B indirect
+addressing (`#[expr]`) and multiple statements per block, and general system variables beyond the
+three listed above. A 3D view (chuck + workpiece, not the whole machine) is also on the wishlist
+alongside real-time simulation.
+
+## License
+
+[MIT](LICENSE)
