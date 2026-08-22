@@ -5,6 +5,7 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using System.Windows.Threading;
@@ -36,6 +37,22 @@ namespace FanucSimulator
         // rather than wherever Windows last happened to browse to.
         private static readonly string NCFilesPath = @"C:\Building Programs\fanuc-simple\NCFiles";
         private readonly List<string> _recentFiles = new();
+
+        // Canvas zoom/pan: applied on top of RenderLathe's own auto-fit scale rather than replacing
+        // it, so the view still frames the whole part by default and these just let the operator push
+        // in on one feature. Pan is stored in screen pixels (not mm) since it's a pure on-screen
+        // offset from wherever auto-fit would otherwise put things - simplest thing that still works
+        // correctly across renders even though the auto-fit scale itself is recomputed from scratch
+        // every call (stock/toolpath extents can grow as a program runs).
+        private double _canvasZoom = 1.0;
+        private double _canvasPanX = 0;
+        private double _canvasPanY = 0;
+        private bool _isPanning = false;
+        private Point _panDragStart;
+        private double _panDragStartX, _panDragStartY;
+        // Cached from the most recent RenderLathe call so MouseWheel can convert a cursor pixel
+        // position to/from world (mm) coordinates without duplicating the auto-fit extent math.
+        private double _lastRenderScale = 1, _lastRenderBaseScale = 1, _lastRenderZOriginX, _lastRenderXOriginY, _lastRenderZMin;
 
         // "CNC MEM" - multiple named programs resident in the control's own memory, distinct from
         // the file-system-backed Save/Load above (which maps to "CF/USB"). O-number -> G-code text.
@@ -1025,6 +1042,39 @@ namespace FanucSimulator
             MacroCommonEmptyLabel.Visibility = commonRows.Count > 0 ? Visibility.Collapsed : Visibility.Visible;
         }
 
+        // Lets an operator poke a variable's value directly - handy for debugging a macro mid-
+        // development without re-running the whole program. Both grids' rows are freshly-built
+        // MacroVariableRow DTOs (see GetLocalVariableRows/GetCommonVariableRows), not live-bound to
+        // the simulator's own variable storage, so a committed edit has to be pushed through
+        // LatheSimulator.SetVariable explicitly and the grids re-pulled from the simulator afterward
+        // - editing the DTO alone would look like it worked but silently not affect the running macro.
+        private void MacroGrid_RowEditEnding(object sender, DataGridRowEditEndingEventArgs e)
+        {
+            if (e.EditAction != DataGridEditAction.Commit || e.Row.Item is not MacroVariableRow row)
+                return;
+
+            // Defer until after WPF has flushed the edited cell value into the bound row object.
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (row.Value is double value && int.TryParse(row.Variable.TrimStart('#'), out var number))
+                {
+                    // _sim.Messages/Alarms are only cleared at the top of RunProgram, not here - log
+                    // just the entries this one edit adds (by index), not the whole accumulated list,
+                    // or a second edit would re-log everything from the first one too.
+                    var messagesBefore = _sim.Messages.Count;
+                    var alarmsBefore = _sim.Alarms.Count;
+                    _sim.SetVariable(number, value);
+                    for (int i = messagesBefore; i < _sim.Messages.Count; i++)
+                        Log(_sim.Messages[i], "success");
+                    for (int i = alarmsBefore; i < _sim.Alarms.Count; i++)
+                        Log(_sim.Alarms[i].ToString(), "error");
+                    if (_sim.Alarms.Count > alarmsBefore)
+                        RefreshAlarmList();
+                }
+                RefreshMacroScreen();
+            }), DispatcherPriority.Background);
+        }
+
         private void PopulateHelpScreen()
         {
             HelpContent.Children.Add(MakeHelpHeader("G-CODES"));
@@ -1158,6 +1208,13 @@ namespace FanucSimulator
         private static readonly SolidColorBrush CanvasBgNormal = new(Color.FromRgb(0x0a, 0x0a, 0x0a));
         private static readonly SolidColorBrush CanvasBgCoolant = new(Color.FromRgb(0x18, 0x30, 0x38));
 
+        // Shared with the MouseWheel zoom handler, which needs the same margin the auto-fit math
+        // uses to convert a cursor pixel position back to world (mm) coordinates.
+        private const double CanvasLeftMargin = 70;   // chuck + spindle label
+        private const double CanvasRightMargin = 70;  // clearance moves + position label
+        private const double CanvasTopMargin = 50;    // spindle label above max diameter
+        private const double CanvasBottomMargin = 20;
+
         private void RenderLathe()
         {
             LatheCanvas.Children.Clear();
@@ -1168,14 +1225,16 @@ namespace FanucSimulator
             // sliver near the centerline. Instead, size the view from what's actually there - the
             // stock envelope plus wherever the toolpath has actually gone (so retract/clearance moves
             // stay visible too) - and use one uniform scale for both axes so the cross-section isn't
-            // visually stretched out of proportion.
+            // visually stretched out of proportion. _canvasZoom/_canvasPanX/_canvasPanY then layer a
+            // manual zoom/pan on top (see LatheCanvas_MouseWheel / drag handlers below) without
+            // disturbing this default framing.
             var canvasWidth = LatheCanvas.ActualWidth > 0 ? LatheCanvas.ActualWidth : 650;
             var canvasHeight = LatheCanvas.ActualHeight > 0 ? LatheCanvas.ActualHeight : 750;
 
-            const double leftMargin = 70;   // chuck + spindle label
-            const double rightMargin = 70;  // clearance moves + position label
-            const double topMargin = 50;    // spindle label above max diameter
-            const double bottomMargin = 20;
+            const double leftMargin = CanvasLeftMargin;
+            const double rightMargin = CanvasRightMargin;
+            const double topMargin = CanvasTopMargin;
+            const double bottomMargin = CanvasBottomMargin;
 
             var toolPathMaxX = _sim.ToolPath.Count > 0 ? _sim.ToolPath.Max(p => p.X) : 0;
             var toolPathMinZ = _sim.ToolPath.Count > 0 ? _sim.ToolPath.Min(p => p.Z) : 0;
@@ -1188,10 +1247,17 @@ namespace FanucSimulator
 
             var availableWidth = Math.Max(50, canvasWidth - leftMargin - rightMargin);
             var availableHeight = Math.Max(50, canvasHeight - topMargin - bottomMargin);
-            var scale = Math.Min(availableWidth / zExtent, availableHeight / Math.Max(1, xExtent));
+            var baseScale = Math.Min(availableWidth / zExtent, availableHeight / Math.Max(1, xExtent));
+            var scale = baseScale * _canvasZoom;
 
-            var zOriginX = leftMargin - zMin * scale; // pixel X where Z=0 falls
-            var xOriginY = canvasHeight - bottomMargin; // pixel Y where X=0 (centerline) falls
+            var zOriginX = leftMargin - zMin * scale + _canvasPanX; // pixel X where Z=0 falls
+            var xOriginY = canvasHeight - bottomMargin + _canvasPanY; // pixel Y where X=0 (centerline) falls
+
+            _lastRenderScale = scale;
+            _lastRenderBaseScale = baseScale;
+            _lastRenderZOriginX = zOriginX;
+            _lastRenderXOriginY = xOriginY;
+            _lastRenderZMin = zMin;
 
             double PxX(double z) => zOriginX + z * scale;
             double PxY(double x) => xOriginY - x * scale;
@@ -1320,7 +1386,75 @@ namespace FanucSimulator
             Canvas.SetLeft(label, PxX(_sim.Z) + 10);
             Canvas.SetTop(label, PxY(_sim.X) - 20);
             LatheCanvas.Children.Add(label);
+
+            ZoomLabel.Text = $"{_canvasZoom * 100:F0}%";
         }
+
+        // ---- Canvas zoom/pan ----
+
+        private void LatheCanvas_MouseWheel(object sender, MouseWheelEventArgs e)
+        {
+            var pos = e.GetPosition(LatheCanvas);
+
+            // World (mm) point currently under the cursor, from the last render's own mapping.
+            var worldZ = (pos.X - _lastRenderZOriginX) / _lastRenderScale;
+            var worldX = (_lastRenderXOriginY - pos.Y) / _lastRenderScale;
+
+            var factor = e.Delta > 0 ? 1.15 : 1 / 1.15;
+            _canvasZoom = Math.Clamp(_canvasZoom * factor, 0.2, 20);
+
+            // Re-derive pan so that same world point stays under the cursor after the zoom change -
+            // reuses the last render's base scale/extents (auto-fit itself doesn't change between
+            // wheel ticks, only _canvasZoom/_canvasPanX/Y do).
+            var newScale = _lastRenderBaseScale * _canvasZoom;
+            _canvasPanX = pos.X - CanvasLeftMargin + newScale * (_lastRenderZMin - worldZ);
+            _canvasPanY = pos.Y + worldX * newScale - LatheCanvas.ActualHeight + CanvasBottomMargin;
+
+            RenderLathe();
+            e.Handled = true;
+        }
+
+        private void LatheCanvas_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ClickCount == 2)
+            {
+                ResetCanvasView();
+                return;
+            }
+
+            _isPanning = true;
+            _panDragStart = e.GetPosition(LatheCanvas);
+            _panDragStartX = _canvasPanX;
+            _panDragStartY = _canvasPanY;
+            LatheCanvas.CaptureMouse();
+            LatheCanvas.Cursor = Cursors.SizeAll;
+        }
+
+        private void LatheCanvas_MouseMove(object sender, MouseEventArgs e)
+        {
+            if (!_isPanning) return;
+            var pos = e.GetPosition(LatheCanvas);
+            _canvasPanX = _panDragStartX + (pos.X - _panDragStart.X);
+            _canvasPanY = _panDragStartY + (pos.Y - _panDragStart.Y);
+            RenderLathe();
+        }
+
+        private void LatheCanvas_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            _isPanning = false;
+            LatheCanvas.ReleaseMouseCapture();
+            LatheCanvas.Cursor = Cursors.Arrow;
+        }
+
+        private void ResetCanvasView()
+        {
+            _canvasZoom = 1.0;
+            _canvasPanX = 0;
+            _canvasPanY = 0;
+            RenderLathe();
+        }
+
+        private void ResetCanvasView_Click(object sender, RoutedEventArgs e) => ResetCanvasView();
 
         private void Log(string msg, string type = "normal")
         {

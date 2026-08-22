@@ -97,7 +97,11 @@ namespace FanucSimulator
 
         private double GetVariableOrZero(int number) => GetVariable(number) ?? 0;
 
-        private void SetVariable(int number, double value)
+        // Public so the MACRO screen's grids can write a value directly (poking a variable mid-
+        // debug without re-running the whole program) through the exact same rules a program's own
+        // #n=... assignment goes through - #0/system-variable guards included, even though neither
+        // is reachable from those grids today (they only ever list #1-33 and assigned #100-999).
+        public void SetVariable(int number, double value)
         {
             if (number == 0)
             {
