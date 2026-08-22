@@ -819,3 +819,4 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
 
 Console.WriteLine();
 Console.WriteLine($"===== TOTAL: {pass} passed, {fail} failed =====");
+Environment.Exit(fail == 0 ? 0 : 1);

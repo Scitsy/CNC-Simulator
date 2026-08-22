@@ -1,0 +1,25 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  build-and-test:
+    # FanucSimulator.csproj targets net8.0-windows with UseWPF=true, which only builds on Windows.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build solution
+        run: dotnet build FanucSimulator.sln --configuration Release
+
+      - name: Run EngineTest regression suite
+        working-directory: EngineTest
+        # Program.cs reads its fixtures via relative paths (Fixtures\*.gcode, ..\NCFiles\*.nc)
+        # resolved against the working directory, not the project directory - `dotnet run
+        # --project EngineTest` from the repo root breaks those paths, so this must run from
+        # inside EngineTest\ itself, same as the local dev loop (`cd EngineTest && dotnet run`).
+        run: dotnet run --configuration Release
