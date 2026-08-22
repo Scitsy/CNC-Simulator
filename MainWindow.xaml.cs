@@ -169,6 +169,7 @@ namespace FanucSimulator
             RefreshOffsetGrids();
             RefreshAlarmList();
             RefreshMacroScreen();
+            if (_stock3DWindow?.IsLoaded == true) _stock3DWindow.Refresh();
         }
 
         private void Reset_Click(object sender, RoutedEventArgs e)
@@ -188,6 +189,11 @@ namespace FanucSimulator
             RefreshOffsetGrids();
             RefreshAlarmList();
             RefreshMacroScreen();
+            if (_stock3DWindow?.IsLoaded == true)
+            {
+                _stock3DWindow.UpdateSimulator(_sim); // Reset replaces _sim wholesale - follow along, don't render the discarded instance
+                _stock3DWindow.Refresh();
+            }
             Log("Reset", "success");
         }
 
@@ -207,6 +213,7 @@ namespace FanucSimulator
             // Changing stock dimensions means chucking a fresh blank, not resizing an already-cut part.
             _sim.ResetStockProfile();
             RenderLathe();
+            if (_stock3DWindow?.IsLoaded == true) _stock3DWindow.Refresh();
         }
 
         // ---- Save / Load ----
@@ -872,6 +879,7 @@ namespace FanucSimulator
             RefreshOffsetGrids();
             RefreshAlarmList();
             RefreshMacroScreen();
+            if (_stock3DWindow?.IsLoaded == true) _stock3DWindow.Refresh();
         }
 
         private void ModeButton_Click(object sender, RoutedEventArgs e)
@@ -1007,6 +1015,19 @@ namespace FanucSimulator
             }
             _toolBuilderWindow.Show();
             _toolBuilderWindow.Activate();
+        }
+
+        // Modeless, single-instance-reused exactly like _toolBuilderWindow above.
+        private Stock3DWindow? _stock3DWindow;
+
+        private void Open3DView_Click(object sender, RoutedEventArgs e)
+        {
+            if (_stock3DWindow == null || !_stock3DWindow.IsLoaded)
+                _stock3DWindow = new Stock3DWindow(_sim) { Owner = this };
+            else
+                _stock3DWindow.Refresh(); // already open - bring it up to date with the current stock
+            _stock3DWindow.Show();
+            _stock3DWindow.Activate();
         }
 
         private void OffsetGrid_RowEditEnding(object sender, DataGridRowEditEndingEventArgs e)
