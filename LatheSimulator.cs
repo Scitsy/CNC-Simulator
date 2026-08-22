@@ -26,6 +26,53 @@ namespace FanucSimulator
         public ModalState Modal { get; } = new();
         public OffsetTables Offsets { get; }
 
+        // Realistic cycle-time estimate, accumulated as moves/dwells actually happen - not a wall-
+        // clock Stopwatch (the program executes near-instantly regardless of what it commands), a
+        // computed estimate of how long the moves/dwells actually commanded would take on a real
+        // machine. Reset once per RunProgram call, same lifetime as Messages/Alarms/Warnings.
+        public double SimulatedSecondsElapsed { get; private set; }
+
+        // No rapid-traverse-rate concept exists elsewhere in the engine - this is an invented,
+        // reasonable default (real lathes vary roughly 10-24 m/min).
+        private const double RapidTraverseRateMmPerMin = 10000;
+
+        // Set around arc tessellation: TessellateArc drives each ~3-degree chord through MoveTo (for
+        // offset/comp/collision-checking reuse), but chord-summed distance is only an approximation
+        // of true arc length - ApplyArcMotion instead adds one exact radius*sweep-based time for the
+        // whole arc, so per-chord MoveTo calls during tessellation must not also add their own
+        // (approximate, and would double-count) time.
+        private bool _suppressMoveTimeAccumulation = false;
+
+        private void AddMoveTime(double distanceMm, bool rapid)
+        {
+            if (distanceMm <= 0 || _suppressMoveTimeAccumulation)
+                return;
+
+            double mmPerMin;
+            if (rapid)
+            {
+                mmPerMin = RapidTraverseRateMmPerMin;
+            }
+            else if (Modal.Feed == FeedMode.PerRevolution)
+            {
+                // Per-rev feed only means something in mm/min terms once the spindle is actually
+                // turning - with it stopped there's no real feed rate to time against, so skip
+                // rather than divide by zero (or silently invent a rate).
+                if (SpindleSpeed <= 0)
+                    return;
+                mmPerMin = FeedRate * SpindleSpeed;
+            }
+            else
+            {
+                mmPerMin = FeedRate;
+            }
+
+            if (mmPerMin <= 0)
+                return;
+
+            SimulatedSecondsElapsed += distanceMm / mmPerMin * 60;
+        }
+
         public LatheSimulator() : this(new OffsetTables()) { }
 
         // Lets a caller carry an existing OffsetTables (e.g. loaded from disk, or already edited
@@ -85,6 +132,7 @@ namespace FanucSimulator
             Messages.Clear();
             Alarms.Clear();
             Warnings.Clear();
+            SimulatedSecondsElapsed = 0;
 
             // Only a genuinely fresh run (not a resume after an M00 pause) resets the macro call
             // stack/depth counter - state started by a G65/M98 call must survive an M00 pause and
@@ -441,9 +489,15 @@ namespace FanucSimulator
         private void ApplyDwell(GCodeParser.Block block)
         {
             if (block.Params.TryGetValue("P", out var ms))
+            {
+                SimulatedSecondsElapsed += ms / 1000.0;
                 Messages.Add($"G04: Dwell {ms:F0} ms");
+            }
             else if (block.Params.TryGetValue("X", out var sec))
+            {
+                SimulatedSecondsElapsed += sec;
                 Messages.Add($"G04: Dwell {sec:F2} sec");
+            }
             else
                 Messages.Add("G04: Dwell");
         }
@@ -481,11 +535,20 @@ namespace FanucSimulator
         private void ApplyMotion(GCodeParser.Block block)
         {
             var (targetX, targetZ, hasMotion) = ResolveTargetXZ(X, Z, block);
-            if (!hasMotion || !TryMoveTo(targetX, targetZ, rapid: Modal.Motion == MotionMode.Rapid))
+            if (!hasMotion)
                 return;
 
+            // A new F-word takes effect for this same block's own move on a real control - must be
+            // applied before the move happens, not after, or the cycle-time calculation (and a real
+            // machine's actual behavior) would use the previous feed rate for one move too long.
+            // RecalculateCssSpeed() deliberately stays AFTER the move below - CSS RPM is meant to
+            // reflect the diameter just arrived at (already relied on by the G96 test: a move to a
+            // smaller X50 diameter expects RPM recomputed for X50, not the X100 starting point).
             if (block.Params.TryGetValue("Feed", out var feed))
                 FeedRate = feed;
+
+            if (!TryMoveTo(targetX, targetZ, rapid: Modal.Motion == MotionMode.Rapid))
+                return;
 
             if (Modal.Spindle == SpindleMode.ConstantSurfaceSpeed)
                 RecalculateCssSpeed();
@@ -547,10 +610,29 @@ namespace FanucSimulator
                 return;
             }
 
-            TessellateArc(X, Z, targetX, targetZ, centerX, centerZ, clockwise);
-
+            // Same F-word-applies-to-this-block's-own-move fix as ApplyMotion - must happen before
+            // the arc actually moves, not after.
             if (block.Params.TryGetValue("Feed", out var feed))
                 FeedRate = feed;
+
+            // True arc length (radius * sweep angle), not the tessellated chords' summed straight-
+            // line distance - close enough to be a near-exact approximation, but "close" isn't
+            // "exact", and exact is easy here since the data's already local. Suppress MoveTo's own
+            // per-chord time accumulation during tessellation so the two don't double-count.
+            var arcRadius = Math.Sqrt(Math.Pow(X - centerX, 2) + Math.Pow(Z - centerZ, 2));
+            var startAngle = Math.Atan2(Z - centerZ, X - centerX);
+            var endAngle = Math.Atan2(targetZ - centerZ, targetX - centerX);
+            var arcSweep = clockwise ? startAngle - endAngle : endAngle - startAngle;
+            while (arcSweep < 0) arcSweep += 2 * Math.PI;
+            if (arcSweep < 1e-9) arcSweep = 2 * Math.PI;
+
+            var alarmCountBeforeArc = Alarms.Count;
+            _suppressMoveTimeAccumulation = true;
+            TessellateArc(X, Z, targetX, targetZ, centerX, centerZ, clockwise);
+            _suppressMoveTimeAccumulation = false;
+            if (Alarms.Count == alarmCountBeforeArc) // don't charge time for an arc that alarmed out mid-tessellation
+                AddMoveTime(arcRadius * arcSweep, rapid: false);
+
             if (Modal.Spindle == SpindleMode.ConstantSurfaceSpeed)
                 RecalculateCssSpeed();
 
@@ -653,6 +735,7 @@ namespace FanucSimulator
             var dz = targetZ - Z;
             var len = Math.Sqrt(dx * dx + dz * dz);
             var hasDirection = len > 1e-6;
+            AddMoveTime(len, rapid);
             var ndx = hasDirection ? dx / len : 0;
             var ndz = hasDirection ? dz / len : 0;
 

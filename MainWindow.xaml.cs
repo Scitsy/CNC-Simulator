@@ -85,8 +85,13 @@ namespace FanucSimulator
         // Real wall-clock elapsed time, not a physics estimate from feed rate/distance - honest and
         // simple, and consistent with this simulator executing G-code near-instantly (these will
         // mostly read "0H 0M 0S", same as a real control's own idle-state screenshot).
-        private readonly System.Diagnostics.Stopwatch _runStopwatch = new();
-        private readonly System.Diagnostics.Stopwatch _cycleStopwatch = new();
+        // Realistic simulated cycle/run time (LatheSimulator.SimulatedSecondsElapsed, computed from
+        // actual commanded feed rates/dwells), not wall-clock Stopwatches - the program executes
+        // near-instantly regardless of what it commands, so real elapsed UI time was never a
+        // meaningful cycle-time estimate. CYCLE resets at the start of each new cycle
+        // (_resumeIndex==0); RUN accumulates across the whole session until Reset.
+        private double _cycleSimulatedSeconds;
+        private double _runSimulatedSeconds;
         private int _partCount = 0;
         private bool _emergencyStop = false;
 
@@ -136,13 +141,14 @@ namespace FanucSimulator
             if (_resumeIndex == 0)
             {
                 Console.Clear();
-                _cycleStopwatch.Restart();
+                _cycleSimulatedSeconds = 0;
             }
-            if (!_runStopwatch.IsRunning)
-                _runStopwatch.Start();
 
             var blocks = _parser.Parse(GCodeInput.Text);
             var result = _sim.RunProgram(blocks, _resumeIndex);
+
+            _cycleSimulatedSeconds += _sim.SimulatedSecondsElapsed;
+            _runSimulatedSeconds += _sim.SimulatedSecondsElapsed;
 
             foreach (var msg in _sim.Messages)
                 Log(msg, "success");
@@ -156,10 +162,7 @@ namespace FanucSimulator
                 Log("[Paused - press Execute to continue]", "info");
 
             if (result.ProgramEnded)
-            {
-                _cycleStopwatch.Stop();
                 _partCount++;
-            }
 
             UpdateDisplay();
             RenderLathe();
@@ -175,8 +178,8 @@ namespace FanucSimulator
             _sim = new LatheSimulator(_sim.Offsets);
             _resumeIndex = 0;
             Console.Clear();
-            _runStopwatch.Reset();
-            _cycleStopwatch.Reset();
+            _runSimulatedSeconds = 0;
+            _cycleSimulatedSeconds = 0;
             _partCount = 0;
             StockDiameterInput.Text = _sim.StockDiameter.ToString("F1");
             StockLengthInput.Text = _sim.StockLength.ToString("F1");
@@ -1158,8 +1161,8 @@ namespace FanucSimulator
 
         private void UpdateStatsDisplay()
         {
-            RunTimeDisplay.Text = FormatHms(_runStopwatch.Elapsed);
-            CycleTimeDisplay.Text = FormatHms(_cycleStopwatch.Elapsed);
+            RunTimeDisplay.Text = FormatHms(TimeSpan.FromSeconds(_runSimulatedSeconds));
+            CycleTimeDisplay.Text = FormatHms(TimeSpan.FromSeconds(_cycleSimulatedSeconds));
             PartCountDisplay.Text = _partCount.ToString();
         }
 

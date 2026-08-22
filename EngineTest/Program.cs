@@ -857,6 +857,86 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
     }
 }
 
+// ---- Realistic cycle-time simulation (SimulatedSecondsElapsed) ----
+// Closed-form physics, so these assert exact expected values (tight tolerance for float rounding
+// only), not just "some plausible-looking number."
+
+// 50. G01 feed move under G98 (per-minute) - straightforward distance/feedrate.
+{
+    var sim = new LatheSimulator();
+    var program = "G21\nG98\nT0101\nG01 Z-52 F100\nM30\n"; // 52mm @ 100mm/min = 31.2s
+    var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
+    Console.WriteLine("[50] G01 under G98 (per-minute feed): exact expected seconds");
+    Check("no alarms", alarms.Count == 0);
+    Check("31.2s (52mm @ 100mm/min)", Math.Abs(sim.SimulatedSecondsElapsed - 31.2) < 0.001);
+}
+
+// 51. G01 feed move under G99 (per-revolution, the default) - effective mm/min = feed(mm/rev) * RPM.
+{
+    var sim = new LatheSimulator();
+    var program = "G21\nG99\nT0101\nM03 S1000\nG01 Z-52 F0.2\nM30\n"; // 52mm @ (0.2*1000)mm/min = 15.6s
+    var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
+    Console.WriteLine("[51] G01 under G99 (per-rev feed + RPM): exact expected seconds");
+    Check("no alarms", alarms.Count == 0);
+    Check("15.6s (52mm @ 200mm/min effective)", Math.Abs(sim.SimulatedSecondsElapsed - 15.6) < 0.001);
+}
+
+// 52. G00 rapid move - against the invented 10000mm/min rapid traverse rate.
+{
+    var sim = new LatheSimulator();
+    var program = "G21\nT0101\nG00 Z-50\nM30\n"; // 50mm @ 10000mm/min = 0.3s
+    var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
+    Console.WriteLine("[52] G00 rapid: exact expected seconds against the 10000mm/min default");
+    Check("no alarms", alarms.Count == 0);
+    Check("0.3s (50mm @ 10000mm/min)", Math.Abs(sim.SimulatedSecondsElapsed - 0.3) < 0.001);
+}
+
+// 53. G04 dwell (both P and X forms) now actually costs simulated time, not just a log message.
+{
+    var sim = new LatheSimulator();
+    var alarmsP = RunFull(sim, new GCodeParser().Parse("G21\nT0101\nG04 P500\nM30\n"), out _);
+    Console.WriteLine("[53] G04 dwell adds real simulated time (P=ms, X=sec forms)");
+    Check("no alarms (P form)", alarmsP.Count == 0);
+    Check("G04 P500 -> exactly 0.5s", Math.Abs(sim.SimulatedSecondsElapsed - 0.5) < 0.001);
+
+    var sim2 = new LatheSimulator();
+    var alarmsX = RunFull(sim2, new GCodeParser().Parse("G21\nT0101\nG04 X2\nM30\n"), out _);
+    Check("no alarms (X form)", alarmsX.Count == 0);
+    Check("G04 X2 -> exactly 2.0s", Math.Abs(sim2.SimulatedSecondsElapsed - 2.0) < 0.001);
+}
+
+// 54. G02/G03 arc time comes from true arc length (radius * sweep), not the tessellated chords'
+// summed straight-line distance - close, but not exact, so this specifically catches a regression
+// back to chord-summed distance.
+{
+    var sim = new LatheSimulator();
+    // G00 X20 Z0: rapid 20mm @ 10000mm/min = 0.12s.
+    // G02 X30 Z-10 I0 K-10: quarter circle, center (20,-10), radius 10, sweep 90deg (pi/2 rad) ->
+    // arc length 10*pi/2 = 15.70796...mm @ 100mm/min (G98) = 9.42478...s.
+    var program = "G21\nG98\nT0101\nG00 X20 Z0\nG02 X30 Z-10 I0 K-10 F100\nM30\n";
+    var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
+    var expected = 20.0 / 10000 * 60 + (10.0 * Math.PI / 2) / 100 * 60;
+    Console.WriteLine("[54] G02 arc time from true arc length (radius * sweep), not chord distance");
+    Check("no alarms", alarms.Count == 0);
+    Check($"{expected:F5}s (rapid approach + true arc length @ 100mm/min)",
+        Math.Abs(sim.SimulatedSecondsElapsed - expected) < 0.001);
+}
+
+// 55. A block's own F-word applies to that same block's move for timing purposes, not the previous
+// modal feed - regression check for the ApplyMotion/ApplyArcMotion ordering fix found while
+// building this feature (FeedRate used to get assigned *after* the move it was meant to govern).
+{
+    var sim = new LatheSimulator();
+    // G01 Z-10 F50: 10mm @ 50mm/min = 12s. G01 Z-20 F200: 10mm @ the NEW 200mm/min = 3s (would be
+    // 12s again, for a buggy total of 24s, if the old feed still governed this move).
+    var program = "G21\nG98\nT0101\nG01 Z-10 F50\nG01 Z-20 F200\nM30\n";
+    var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
+    Console.WriteLine("[55] A block's own F-word governs that block's own move (ordering fix)");
+    Check("no alarms", alarms.Count == 0);
+    Check("15s total (12s @ F50 + 3s @ F200, not 24s if the old feed leaked into the second move)",
+        Math.Abs(sim.SimulatedSecondsElapsed - 15.0) < 0.001);
+}
+
 Console.WriteLine();
 Console.WriteLine($"===== TOTAL: {pass} passed, {fail} failed =====");
 Environment.Exit(fail == 0 ? 0 : 1);
