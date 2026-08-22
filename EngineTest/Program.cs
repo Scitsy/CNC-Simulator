@@ -101,13 +101,16 @@ Console.WriteLine("===== RETRACT-PATH FIX + COLLISION DETECTION VERIFICATION ===
 
 // ---- Part 3: collision detection ----
 
-// 5. Deliberately-bad program: manual rapid straight into untouched stock alarms and tags collision
+// 5. Deliberately-bad program: manual rapid straight into untouched stock warns and tags collision.
+// A rapid crash isn't something a real control can know about (no Alarm) - it's caught here purely
+// as a simulator convenience, logged as a Warning instead. See the comment at the collision check
+// in LatheSimulator.cs's MoveTo for the reasoning.
 {
     var program = "G21\nT0101\nG0 X76.2 Z2\nG1 X40 Z2 F0.2\nG1 Z-20 F0.15\nG0 X76.2 Z2\nG0 X10 Z-40\nM30\n";
     var sim = new LatheSimulator();
     sim.RunProgram(new GCodeParser().Parse(program));
-    Console.WriteLine("[5] INTENTIONAL FAIL: manual rapid straight into untouched stock");
-    Check("alarm 100 fires", sim.Alarms.Any(a => a.Number == 100));
+    Console.WriteLine("[5] Manual rapid straight into untouched stock warns and tags collision");
+    Check("collision warning fires", sim.Warnings.Any(w => w.Contains("COLLISION WARNING")));
     Check("last rapid segment tagged collision", sim.ToolPath[^1].Type == "collision" && sim.ToolPath[^2].Type == "collision");
 }
 
@@ -117,7 +120,7 @@ Console.WriteLine("===== RETRACT-PATH FIX + COLLISION DETECTION VERIFICATION ===
     var sim = new LatheSimulator();
     sim.RunProgram(new GCodeParser().Parse(program));
     Console.WriteLine("[6] Rapid staying outside the stock doesn't alarm");
-    Check("no alarm 100", !sim.Alarms.Any(a => a.Number == 100));
+    Check("no collision warning", !sim.Warnings.Any(w => w.Contains("COLLISION WARNING")));
 }
 
 // 7. Rapid landing exactly flush with the surface doesn't alarm
@@ -126,7 +129,7 @@ Console.WriteLine("===== RETRACT-PATH FIX + COLLISION DETECTION VERIFICATION ===
     var sim = new LatheSimulator();
     sim.RunProgram(new GCodeParser().Parse(program));
     Console.WriteLine("[7] Rapid flush with the surface doesn't alarm");
-    Check("no alarm 100", !sim.Alarms.Any(a => a.Number == 100));
+    Check("no collision warning", !sim.Warnings.Any(w => w.Contains("COLLISION WARNING")));
 }
 
 // 8. Rapid through an already-cleared region doesn't alarm
@@ -135,7 +138,7 @@ Console.WriteLine("===== RETRACT-PATH FIX + COLLISION DETECTION VERIFICATION ===
     var sim = new LatheSimulator();
     sim.RunProgram(new GCodeParser().Parse(program));
     Console.WriteLine("[8] Rapid through an already-turned-down (cleared) region doesn't alarm");
-    Check("no alarm 100", !sim.Alarms.Any(a => a.Number == 100));
+    Check("no collision warning", !sim.Warnings.Any(w => w.Contains("COLLISION WARNING")));
 }
 
 // 9. Rapid through the hollow interior of an already-bored hole doesn't alarm
@@ -144,7 +147,7 @@ Console.WriteLine("===== RETRACT-PATH FIX + COLLISION DETECTION VERIFICATION ===
     var sim = new LatheSimulator();
     sim.RunProgram(new GCodeParser().Parse(program));
     Console.WriteLine("[9] Rapid through the hollow interior of an already-bored hole doesn't alarm");
-    Check("no alarm 100", !sim.Alarms.Any(a => a.Number == 100));
+    Check("no collision warning", !sim.Warnings.Any(w => w.Contains("COLLISION WARNING")));
 }
 
 // 10. The very first rapid of a run is exempt, even aimed straight at solid stock
@@ -153,7 +156,7 @@ Console.WriteLine("===== RETRACT-PATH FIX + COLLISION DETECTION VERIFICATION ===
     var sim = new LatheSimulator();
     sim.RunProgram(new GCodeParser().Parse(program));
     Console.WriteLine("[10] Very first rapid of a run is exempt from collision checking");
-    Check("no alarm 100", !sim.Alarms.Any(a => a.Number == 100));
+    Check("no collision warning", !sim.Warnings.Any(w => w.Contains("COLLISION WARNING")));
 }
 
 // 11. The first rapid right after a tool change is exempt; the next rapid on the same tool is checked.
@@ -163,7 +166,8 @@ Console.WriteLine("===== RETRACT-PATH FIX + COLLISION DETECTION VERIFICATION ===
     var sim = new LatheSimulator();
     sim.RunProgram(new GCodeParser().Parse(program));
     Console.WriteLine("[11] First rapid after a tool change is exempt; the next one on that tool is checked");
-    Check("exactly one alarm 100 (the post-exemption X10->X76.2 crossing, not the exempt approach)", sim.Alarms.Count(a => a.Number == 100) == 1);
+    Check("exactly one collision warning (the post-exemption X10->X76.2 crossing, not the exempt approach)",
+        sim.Warnings.Count(w => w.Contains("COLLISION WARNING")) == 1);
 }
 
 // 12. Feed moves through material never alarm, regardless of depth (they're supposed to cut)
@@ -172,10 +176,10 @@ Console.WriteLine("===== RETRACT-PATH FIX + COLLISION DETECTION VERIFICATION ===
     var sim = new LatheSimulator();
     sim.RunProgram(new GCodeParser().Parse(program));
     Console.WriteLine("[12] Feed moves through material never alarm");
-    Check("no alarm 100", !sim.Alarms.Any(a => a.Number == 100));
+    Check("no collision warning", !sim.Warnings.Any(w => w.Contains("COLLISION WARNING")));
 }
 
-// ---- Critical regression: trusted fixtures must produce zero new alarm-100s ----
+// ---- Critical regression: trusted fixtures must produce zero new collision warnings ----
 
 void RegressionCheck(string label, string path, double stockDiameter, double stockLength)
 {
@@ -197,12 +201,12 @@ void RegressionCheck(string label, string path, double stockDiameter, double sto
     try { sim.RunProgram(new GCodeParser().Parse(File.ReadAllText(path))); }
     catch (Exception ex) { thrown = ex; }
     Check("no exception", thrown == null);
-    Check("zero alarm-100 (rapid collision)", !sim.Alarms.Any(a => a.Number == 100));
+    Check("zero collision warnings (rapid collision)", !sim.Warnings.Any(w => w.Contains("COLLISION WARNING")));
     Check("zero alarm-85 (tool mismatch)", !sim.Alarms.Any(a => a.Number == 85));
     // Single-axis-ness is only asserted on the ENGINE'S OWN generated moves (checks 1-3) - hand-
     // written G-code in these reference files is free to use a diagonal rapid as long as it's
-    // actually safe (e.g. retreating to full clearance past the face), which is what alarm-100
-    // above already verifies.
+    // actually safe (e.g. retreating to full clearance past the face), which is what the collision
+    // warning check above already verifies.
 }
 
 RegressionCheck("[13] Regression: sample.gcode (real reference program, 2.5in OD x 3in length per its own comments)",

@@ -428,6 +428,13 @@ namespace FanucSimulator
             var offset = Offsets.GetOrCreateTool(_activeOffsetNumber);
             _pendingCompLine = null; // new tool may carry a different nose radius - don't miter across the swap
 
+            // The new tool's geometry offset differs from the old one's, so the last tracked render
+            // position was computed under a now-stale offset - checking the next rapid against it would
+            // be comparing against a position the tool was never actually at, producing a false-positive
+            // collision warning. Reuses the same "first rapid of the run is exempt" mechanism (MoveTo's
+            // null-check on _lastActualRenderPos) for every tool change, not just the very first move.
+            _lastActualRenderPos = null;
+
             Messages.Add($"T{CurrentTool:D2}{_activeOffsetNumber:D2}: Tool {CurrentTool} selected (offset #{_activeOffsetNumber}, nose R{offset.NoseRadius:F2})");
         }
 
