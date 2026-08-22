@@ -33,6 +33,16 @@ runs real conditionals and loops, not just token substitution.
 - **A carved stock model**: the workpiece is a sampled profile that actually loses material as the
   program runs (turning, facing, boring, drilling, grooving, threading all modify it), not a static
   outline with a toolpath drawn over it.
+- **Realistic cycle-time simulation**: RUN TIME/CYCLE TIME on the POS ALL screen are computed from
+  actual commanded physics (feed rate + distance, true arc length for G02/G03, G04 dwell duration,
+  a rapid-traverse default) as the program runs, not wall-clock time - a program that would take two
+  minutes on a real machine reports about two minutes, even though the simulator itself executes
+  instantly.
+- **A 3D view**: the same carved stock revolved into a shaded 3D solid alongside a chuck stand-in,
+  in its own window with mouse-drag orbit and scroll-to-zoom - a first pass, not a full machine
+  model (see Scope below).
+
+![3D view](docs/screenshots/stock_3d_view.png)
 
 ## Screenshots
 
@@ -76,10 +86,10 @@ A few worth starting with:
 ## Testing
 
 `EngineTest/` is a headless console harness (source-linked against the same engine files, no test
-framework dependency) with 174 hand-rolled assertions covering every documented G/M-code, both
+framework dependency) with 188 hand-rolled assertions covering every documented G/M-code, both
 canned-cycle directions, macro control flow, geometry checks against several of the demo programs
-above, and the catalog-persistence round-trip. Runs automatically on every push via GitHub Actions
-(see the badge at the top of this file).
+above, the catalog-persistence round-trip, and exact closed-form cycle-time checks. Runs
+automatically on every push via GitHub Actions (see the badge at the top of this file).
 
 ```bash
 cd EngineTest
@@ -94,17 +104,17 @@ dotnet run
 - `StockProfile.cs` - the carved stock model.
 - `OffsetTables.cs` / `ToolCatalog.cs` / `ToolGeometryRenderer.cs` - tool/work offsets and the
   visual tool library.
-- `MainWindow.xaml(.cs)` / `ToolBuilderWindow.xaml(.cs)` - the UI.
+- `MainWindow.xaml(.cs)` / `ToolBuilderWindow.xaml(.cs)` / `Stock3DWindow.xaml(.cs)` - the UI.
 - `NCFiles/` - demo programs. `EngineTest/` - the regression suite.
 
 ## Scope
 
 This models a 2-axis turning center closely enough to be useful for learning and testing programs,
-not a certified twin of any real control. Not currently modeled: live time-based motion simulation
-(feed rate affects carving order, not simulated duration - on the wishlist), Custom Macro B indirect
-addressing (`#[expr]`) and multiple statements per block, and general system variables beyond the
-three listed above. A 3D view (chuck + workpiece, not the whole machine) is also on the wishlist
-alongside real-time simulation.
+not a certified twin of any real control. Not currently modeled: Custom Macro B indirect addressing
+(`#[expr]`) and multiple statements per block, and general system variables beyond the three listed
+above. The 3D view is a first pass: a plain cylinder stands in for the chuck (not real jaw
+geometry), it shows the workpiece only (no tool/toolpath in 3D), there's no cutaway/cross-section
+view, and a through-bore right at the face isn't specially mitered against the end cap.
 
 ## License
 
