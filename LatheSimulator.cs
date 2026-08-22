@@ -155,6 +155,13 @@ namespace FanucSimulator
                     continue;
                 }
 
+                if (IsDrillingSetup(toExecute))
+                {
+                    StoreDrillingSetup(toExecute);
+                    i++;
+                    continue;
+                }
+
                 if (IsGroovingSetup(toExecute))
                 {
                     StoreGroovingSetup(toExecute);

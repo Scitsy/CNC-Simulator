@@ -745,5 +745,73 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
     Check("alarm 115 raised", alarms.Exists(a => a.Number == 115));
 }
 
+// 46. G74 peck drilling: bores a straight hole to the drill tool's fixed diameter, retracts fully
+// to the start Z when done (the R-plane), and cuts no collision warnings along the way (each peck
+// clears back by the retract amount before the next one, mirroring G75's chip-clearing pattern).
+{
+    var sim = new LatheSimulator();
+    sim.Offsets.GetOrCreateTool(4).Type = ToolType.Drill;
+    sim.Offsets.GetOrCreateTool(4).Width = 10;
+    var program = "G21\nT0404\nG00 X0 Z2\nG74 R0.5\nG74 X0 Z-30 Q5000 F0.1\nM30\n";
+    var alarms = RunFull(sim, new GCodeParser().Parse(program), out var warnings);
+    Console.WriteLine("[46] G74 peck drilling cycle bores a straight hole");
+    Check("no alarms", alarms.Count == 0);
+    Check("no collision warnings (each peck retracts before the next)", warnings.Count == 0);
+    Check("retracted fully back to the start Z2 when the cycle finished", Math.Abs(sim.Z - 2) < 0.01 && Math.Abs(sim.X - 0) < 0.01);
+    var idxMidBore = NearestIndex(sim.Stock, -15);
+    var idxNearBottom = NearestIndex(sim.Stock, -29);
+    Check("bore carved to the drill's 10mm fixed width mid-hole", Math.Abs(sim.Stock.InnerX[idxMidBore] - 10) < 1.0);
+    Check("bore carved to the drill's 10mm fixed width near the bottom", Math.Abs(sim.Stock.InnerX[idxNearBottom] - 10) < 1.0);
+
+    // With a 5mm peck over a 32mm total travel (Z2 -> Z-30), the cycle should retract-and-reapproach
+    // (rapid) several times, not plunge in one continuous feed move.
+    var rapidSegmentsDuringCycle = 0;
+    foreach (var seg in sim.ToolPath)
+        if (seg.Type == "rapid" && seg.Z < 2 && seg.Z > -30)
+            rapidSegmentsDuringCycle++;
+    Check("multiple peck-clearing rapid retracts occurred (not a single continuous plunge)", rapidSegmentsDuringCycle >= 4);
+}
+
+// 47. G74 with the wrong tool type (no drill selected) is rejected with alarm 85, same fool-proofing
+// pattern already established for G71/G72/G75/G76 - and no motion/carving happens.
+{
+    var sim = new LatheSimulator();
+    var program = "G21\nT0101\nG00 X0 Z2\nG74 R0.5\nG74 X0 Z-30 Q5000 F0.1\nM30\n"; // T0101 = default OdTurning tool
+    var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
+    Console.WriteLine("[47] G74 with wrong tool type raises alarm 85");
+    Check("alarm 85 raised", alarms.Exists(a => a.Number == 85));
+    Check("no bore carved (cycle rejected before any motion)", sim.Stock.InnerX[NearestIndex(sim.Stock, -15)] < 0.01);
+}
+
+// 48. Full geometry + variable check of O0013 (headless) - the actual demonstration program for
+// both Saturday PM features together: G74 peck-drills a centerline hole, then an OD turning pass
+// captures #4001 after each motion mode and #5001/#5002 after the drilling cycle retracts.
+{
+    var sim = new LatheSimulator();
+    sim.Offsets.GetOrCreateTool(2).Type = ToolType.Drill;
+    sim.Offsets.GetOrCreateTool(2).Width = 8;
+    sim.Offsets.GetOrCreateTool(1).Type = ToolType.OdTurning;
+    var path = @"..\NCFiles\O0013_g74_and_system_vars_demo.nc";
+    var allAlarms = RunFull(sim, new GCodeParser().Parse(File.ReadAllText(path)), out var allWarnings);
+    Console.WriteLine("[48] O0013 G74 + system variables demo: full geometry check");
+    Check("no alarms", allAlarms.Count == 0);
+    foreach (var a in allAlarms) Console.WriteLine($"    ALM{a.Number}: {a.Message}");
+    foreach (var w in allWarnings) Console.WriteLine($"    WARN: {w}");
+    Check("no collision warnings", allWarnings.Count == 0);
+
+    Check("drilled bore reaches the 8mm target diameter near the bottom (Z-38)", Math.Abs(sim.Stock.InnerX[NearestIndex(sim.Stock, -38)] - 8) < 1.0);
+    Check("#5001 captured the drilling cycle's retracted X0", Math.Abs((sim.GetCommonVariableRows().Find(r => r.Variable == "#101")?.Value ?? -1) - 0) < 0.01);
+    Check("#5002 captured the drilling cycle's retracted Z2", Math.Abs((sim.GetCommonVariableRows().Find(r => r.Variable == "#102")?.Value ?? -1) - 2) < 0.01);
+
+    Check("#4001 == 0 after the G00 approach", Math.Abs((sim.GetCommonVariableRows().Find(r => r.Variable == "#110")?.Value ?? -1) - 0) < 0.01);
+    Check("#4001 == 1 after the G01 step-down", Math.Abs((sim.GetCommonVariableRows().Find(r => r.Variable == "#111")?.Value ?? -1) - 1) < 0.01);
+    Check("#4001 == 2 after the G02 fillet", Math.Abs((sim.GetCommonVariableRows().Find(r => r.Variable == "#112")?.Value ?? -1) - 2) < 0.01);
+    Check("#4001 == 3 after the G03 fillet", Math.Abs((sim.GetCommonVariableRows().Find(r => r.Variable == "#113")?.Value ?? -1) - 3) < 0.01);
+
+    Check("OD profile: step-down diameter ~30mm at Z-15", Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -15)] - 30) < 0.5);
+    Check("OD profile: convex fillet returns to ~40mm at Z-25", Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -25)] - 40) < 0.5);
+    Check("OD profile: concave fillet back to ~30mm at Z-50", Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -50)] - 30) < 0.5);
+}
+
 Console.WriteLine();
 Console.WriteLine($"===== TOTAL: {pass} passed, {fail} failed =====");

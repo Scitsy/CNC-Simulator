@@ -9,6 +9,7 @@ namespace FanucSimulator
         private double _roughingDepth = 0;
         private double _roughingRetract = 1.0;
         private double _groovingRetract = 0.5;
+        private double _drillingRetract = 0.5;
         private int _threadFinishPasses = 1;
         private double _threadTipAngle = 60;
         private double _threadMinDepthOfCut = 0.02;
@@ -23,6 +24,15 @@ namespace FanucSimulator
         {
             _groovingRetract = block.Params.TryGetValue("R", out var r) ? Math.Abs(ToMm(r)) : 0.5;
             Messages.Add($"G75: Grooving cycle setup, retract {_groovingRetract:F2}mm");
+        }
+
+        private static bool IsDrillingSetup(GCodeParser.Block block) =>
+            block.Commands.Any(c => c.Type == 'G' && c.Code == 74) && !block.Params.ContainsKey("Z");
+
+        private void StoreDrillingSetup(GCodeParser.Block block)
+        {
+            _drillingRetract = block.Params.TryGetValue("R", out var r) ? Math.Abs(ToMm(r)) : 0.5;
+            Messages.Add($"G74: Peck drilling cycle setup, retract {_drillingRetract:F2}mm");
         }
 
         private static bool IsThreadingSetup(GCodeParser.Block block) =>
@@ -54,6 +64,9 @@ namespace FanucSimulator
                 if (type != 'G') continue;
 
                 if ((c == 70 || c == 71 || c == 72) && block.Params.ContainsKey("P") && block.Params.ContainsKey("Q"))
+                { code = c; return true; }
+
+                if (c == 74 && block.Params.ContainsKey("X") && block.Params.ContainsKey("Z") && block.Params.ContainsKey("Q"))
                 { code = c; return true; }
 
                 if (c == 75 && block.Params.ContainsKey("X") && block.Params.ContainsKey("Z"))
@@ -88,6 +101,7 @@ namespace FanucSimulator
                 case 70: ExecuteFinishingCycle(block, blocks); break;
                 case 71: ExecuteRoughingCycle(isFacing: false, block, blocks); break;
                 case 72: ExecuteRoughingCycle(isFacing: true, block, blocks); break;
+                case 74: ExecuteDrillingCycle(block); break;
                 case 75: ExecuteGroovingCycle(block); break;
                 case 76: ExecuteThreadingCycle(block); break;
             }
@@ -205,6 +219,63 @@ namespace FanucSimulator
                 depths.Add(height);
 
             return depths;
+        }
+
+        // Mirrors ExecuteGroovingCycle with the peck axis swapped from X to Z: a straight bore gets
+        // pecked in Z (chip-breaking retract each peck, matching real FANUC G74's Q = Z peck depth),
+        // with P as an optional X-direction shift for stepping to another diameter between peck runs
+        // (0/absent for the common single-diameter straight-drilling case).
+        private void ExecuteDrillingCycle(GCodeParser.Block block)
+        {
+            if (!CheckToolType(74, "peck drilling", ToolType.Drill))
+                return;
+
+            var (targetX, targetZ, hasMotion) = ResolveTargetXZ(X, Z, block);
+            if (!hasMotion)
+            {
+                Alarms.Add(new Alarm(79, "G74: Missing X/Z target"));
+                return;
+            }
+
+            // Q and P are always in microns (1/1000 mm) on a real Fanuc control, regardless of
+            // G20/G21 - the same well-known quirk as G75's P/Q.
+            var peckZ = block.Params.TryGetValue("Q", out var qVal) ? Math.Abs(qVal) / 1000.0 : 0.5;
+            var stepX = block.Params.TryGetValue("P", out var pVal) ? Math.Abs(pVal) / 1000.0 : 0.0;
+            var retract = block.Params.TryGetValue("R", out var rVal) ? Math.Abs(ToMm(rVal)) : _drillingRetract;
+            var feed = block.Params.TryGetValue("Feed", out var f) ? f : FeedRate;
+
+            var startZ = Z;
+            var xPositions = BuildGroovePlunges(X, targetX, stepX);
+            Messages.Add($"G74: Peck drilling cycle, {xPositions.Count} X position(s), peck {peckZ:F3}mm");
+
+            FeedRate = feed;
+            var dir = Math.Sign(targetZ - startZ);
+            foreach (var x in xPositions)
+            {
+                if (!TryMoveTo(x, startZ, rapid: true))
+                    return;
+
+                var depth = startZ;
+                while (dir > 0 ? depth < targetZ - 1e-9 : depth > targetZ + 1e-9)
+                {
+                    depth = dir > 0 ? Math.Min(targetZ, depth + peckZ) : Math.Max(targetZ, depth - peckZ);
+                    if (!TryMoveTo(x, depth, rapid: false))
+                        return;
+
+                    var stillPecking = dir > 0 ? depth < targetZ - 1e-9 : depth > targetZ + 1e-9;
+                    if (stillPecking)
+                    {
+                        var clearZ = dir > 0 ? Math.Max(startZ, depth - retract) : Math.Min(startZ, depth + retract);
+                        if (!TryMoveTo(x, clearZ, rapid: true))
+                            return;
+                    }
+                }
+
+                if (!TryMoveTo(x, startZ, rapid: true)) // clear the bore before the next X position
+                    return;
+            }
+
+            Messages.Add($"G74: Peck drilling complete, retracted to Z{startZ:F2}");
         }
 
         private void ExecuteGroovingCycle(GCodeParser.Block block)
