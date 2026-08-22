@@ -38,9 +38,10 @@ runs real conditionals and loops, not just token substitution.
   a rapid-traverse default) as the program runs, not wall-clock time - a program that would take two
   minutes on a real machine reports about two minutes, even though the simulator itself executes
   instantly.
-- **A 3D view**: the same carved stock revolved into a shaded 3D solid alongside a chuck stand-in,
-  in its own window with mouse-drag orbit and scroll-to-zoom - a first pass, not a full machine
-  model (see Scope below).
+- **A 3D view**: the same carved stock revolved into a shaded 3D solid alongside a 3-jaw chuck
+  stand-in, the current tool position, and the toolpath itself (color-coded rapid/feed, matching the
+  2D canvas) - its own window with mouse-drag orbit and scroll-to-zoom, a first pass, not a full
+  machine model (see Scope below).
 
 ![3D view](docs/screenshots/stock_3d_view.png)
 
@@ -113,9 +114,8 @@ This models a 2-axis turning center closely enough to be useful for learning and
 not a certified twin of any real control. Not currently modeled: Custom Macro B indirect addressing
 (`#[expr]`) and multiple statements per block, and general system variables beyond the three listed
 above. The 3D view is a first pass: the chuck is a simplified 3-jaw stand-in (flat wedge jaws, not
-manufacturer-accurate geometry), a small marker shows the tool's current position but the toolpath
-itself isn't drawn in 3D, there's no cutaway/cross-section view, and a through-bore right at the
-face isn't specially mitered against the end cap.
+manufacturer-accurate geometry), there's no cutaway/cross-section view, and a through-bore right at
+the face isn't specially mitered against the end cap.
 
 ## License
 
