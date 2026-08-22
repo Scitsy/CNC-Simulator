@@ -1,0 +1,668 @@
+<Window x:Class="FanucSimulator.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Fanuc Simulator - 0i-TF Plus" Height="1040" Width="1560"
+        Background="#0a0a0a" Foreground="#f0f0f0"
+        FontFamily="Courier New" Closing="Window_Closing">
+
+    <Window.Resources>
+        <!-- Dark panel chrome (title strip, mode buttons, action bar, console, MDI keypad) -->
+        <SolidColorBrush x:Key="CyanText" Color="#29d6d6"/>
+        <SolidColorBrush x:Key="ValueText" Color="#f0f0f0"/>
+        <SolidColorBrush x:Key="MutedText" Color="#6a8a9a"/>
+        <SolidColorBrush x:Key="AlarmRed" Color="#ff3b3b"/>
+        <SolidColorBrush x:Key="OkGreen" Color="#29d629"/>
+
+        <!-- Light LCD screen theme - the CRT area only, matching the reference photos.
+             ScreenBg/ScreenAltRow/ScreenBorder/ScreenHeader/ScreenValue/ScreenStatLabel/ScreenMuted
+             and PanelButton/DisabledPanelButton/ScreenFieldLabel now live in App.xaml so a
+             secondary window (ToolBuilderWindow) can share them too. -->
+        <SolidColorBrush x:Key="ScreenAxisLabel" Color="#1a8a1a"/>
+        <SolidColorBrush x:Key="ScreenCode" Color="#0a6a6a"/>
+
+        <Style x:Key="SoftKeyButton" TargetType="Button">
+            <Setter Property="Background" Value="{StaticResource ScreenBg}"/>
+            <Setter Property="Foreground" Value="{StaticResource ScreenMuted}"/>
+            <Setter Property="Padding" Value="4,3"/>
+            <Setter Property="Margin" Value="0,0,2,0"/>
+            <Setter Property="BorderBrush" Value="{StaticResource ScreenBorder}"/>
+            <Setter Property="FontSize" Value="11"/>
+        </Style>
+        <Style x:Key="ActiveSoftKeyButton" TargetType="Button" BasedOn="{StaticResource SoftKeyButton}">
+            <Setter Property="Background" Value="White"/>
+            <Setter Property="Foreground" Value="{StaticResource ScreenValue}"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="BorderBrush" Value="{StaticResource ScreenValue}"/>
+            <Setter Property="BorderThickness" Value="1.5"/>
+        </Style>
+        <Style x:Key="DisabledSoftKeyButton" TargetType="Button" BasedOn="{StaticResource SoftKeyButton}">
+            <Setter Property="IsEnabled" Value="False"/>
+            <Setter Property="Foreground" Value="#9a9d94"/>
+        </Style>
+        <Style x:Key="KeypadKey" TargetType="Button">
+            <Setter Property="Background" Value="#2a2a2a"/>
+            <Setter Property="Foreground" Value="{StaticResource ValueText}"/>
+            <Setter Property="BorderBrush" Value="#444"/>
+            <Setter Property="Margin" Value="2"/>
+            <Setter Property="Padding" Value="2"/>
+            <Setter Property="Height" Value="36"/>
+        </Style>
+        <Style x:Key="FunctionKey" TargetType="Button" BasedOn="{StaticResource KeypadKey}">
+            <Setter Property="FontSize" Value="8"/>
+            <Setter Property="Padding" Value="1"/>
+            <Setter Property="ContentTemplate">
+                <Setter.Value>
+                    <DataTemplate>
+                        <TextBlock Text="{Binding}" TextWrapping="Wrap" TextAlignment="Center" VerticalAlignment="Center"/>
+                    </DataTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="FieldLabel" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="Foreground" Value="{StaticResource MutedText}"/>
+        </Style>
+        <Style x:Key="ModalCode" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Foreground" Value="{StaticResource ScreenCode}"/>
+            <Setter Property="Margin" Value="4"/>
+        </Style>
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="{StaticResource ScreenBg}"/>
+            <Setter Property="Foreground" Value="{StaticResource ScreenStatLabel}"/>
+            <Setter Property="Padding" Value="4"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="1.6*"/>
+            <ColumnDefinition Width="1.3*"/>
+            <ColumnDefinition Width="280"/>
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Left: Lathe view -->
+        <Grid Grid.Row="0" Grid.Column="0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <Border Grid.Row="0" Background="#1a1a1a" BorderThickness="2" BorderBrush="#333">
+                <Canvas x:Name="LatheCanvas" Background="#0a0a0a" SizeChanged="LatheCanvas_SizeChanged"/>
+            </Border>
+
+            <StackPanel Grid.Row="1" Orientation="Horizontal" Background="#1a1a1a" Margin="0,4,0,0">
+                <TextBlock Text="Stock Diameter (mm):" VerticalAlignment="Center" Foreground="{StaticResource MutedText}" Margin="6,4,4,4"/>
+                <TextBox x:Name="StockDiameterInput" Width="55" Background="#0a0a0a" Foreground="{StaticResource ValueText}" Text="76.2"/>
+                <TextBlock Text="Length (mm):" VerticalAlignment="Center" Foreground="{StaticResource MutedText}" Margin="12,0,4,0"/>
+                <TextBox x:Name="StockLengthInput" Width="55" Background="#0a0a0a" Foreground="{StaticResource ValueText}" Text="100"/>
+                <Button Content="Apply" Click="ApplyStock_Click" Style="{StaticResource PanelButton}" Margin="12,0,0,0"/>
+            </StackPanel>
+        </Grid>
+
+        <!-- Middle: Control panel -->
+        <Grid Grid.Row="0" Grid.Column="1" Background="#1a1a1a" Margin="10">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="150"/>
+            </Grid.RowDefinitions>
+
+            <!-- Title strip -->
+            <Grid Grid.Row="0" Margin="0,0,0,8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <Border Grid.Column="0" Background="#e8c000" Padding="8,3">
+                    <TextBlock Text="FANUC" Foreground="#a00000" FontWeight="Bold" FontSize="16"/>
+                </Border>
+                <TextBlock Grid.Column="1" Text="Series 0i-TF" Foreground="{StaticResource ValueText}" FontSize="14" VerticalAlignment="Center" Margin="10,0,0,0"/>
+                <Border Grid.Column="2" Background="#1a8f9e" Padding="8,3">
+                    <TextBlock Text="Plus" Foreground="White" FontWeight="Bold" FontSize="14"/>
+                </Border>
+            </Grid>
+
+            <!-- Mode select -->
+            <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
+                <Button x:Name="ModeEditButton" Content="EDIT" Tag="EDIT" Click="ModeButton_Click" Style="{StaticResource PanelButton}"/>
+                <Button x:Name="ModeAutoButton" Content="AUTO" Tag="AUTO" Click="ModeButton_Click" Style="{StaticResource PanelButton}"/>
+                <Button x:Name="ModeMdiButton" Content="MDI" Tag="MDI" Click="ModeButton_Click" Style="{StaticResource PanelButton}"/>
+                <Button Content="JOG" Style="{StaticResource DisabledPanelButton}"/>
+                <Button Content="HANDLE" Style="{StaticResource DisabledPanelButton}"/>
+                <Button Content="REF" Style="{StaticResource DisabledPanelButton}"/>
+            </StackPanel>
+
+            <!-- Screen -->
+            <Border Grid.Row="2" Background="{StaticResource ScreenBg}" BorderThickness="2" BorderBrush="{StaticResource ScreenBorder}" Margin="0,0,0,8">
+                <Grid Margin="10">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="34"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Swappable screen content -->
+                    <Grid Grid.Row="0">
+
+                        <!-- POS screen -->
+                        <StackPanel x:Name="PosScreen">
+                            <Grid Margin="0,0,0,6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" x:Name="PosHeaderDisplay" Text="POSITION(ABS)" Foreground="{StaticResource ScreenHeader}" FontWeight="Bold"/>
+                                <TextBlock Grid.Column="1" x:Name="ProgramIdDisplay" Text="T00" Foreground="{StaticResource ScreenHeader}"/>
+                            </Grid>
+
+                            <!-- ABS sub-view: simple large X/Z, matching the close reference photo -->
+                            <StackPanel x:Name="PosAbsView" Margin="0,4,0,10">
+                                <Grid Margin="0,2,0,2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="34"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="X" FontSize="26" FontWeight="Bold" Foreground="{StaticResource ScreenAxisLabel}"/>
+                                    <TextBlock Grid.Column="1" x:Name="AbsXBigDisplay" Text="0.000" FontSize="30" FontWeight="Bold" Foreground="{StaticResource ScreenValue}" HorizontalAlignment="Right"/>
+                                </Grid>
+                                <Grid Margin="0,2,0,2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="34"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Z" FontSize="26" FontWeight="Bold" Foreground="{StaticResource ScreenAxisLabel}"/>
+                                    <TextBlock Grid.Column="1" x:Name="AbsZBigDisplay" Text="0.000" FontSize="30" FontWeight="Bold" Foreground="{StaticResource ScreenValue}" HorizontalAlignment="Right"/>
+                                </Grid>
+                            </StackPanel>
+
+                            <!-- ALL sub-view: ABSOLUTE/MACHINE/DISTANCE-TO-GO + modal grid -->
+                            <StackPanel x:Name="PosAllView" Visibility="Collapsed" Margin="0,0,0,10">
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="ABSOLUTE" Style="{StaticResource ScreenFieldLabel}"/>
+                                        <TextBlock x:Name="AbsXDisplay" Text="X 0.000" FontSize="18" FontWeight="Bold" Foreground="{StaticResource ScreenValue}"/>
+                                        <TextBlock x:Name="AbsZDisplay" Text="Z 0.000" FontSize="18" FontWeight="Bold" Foreground="{StaticResource ScreenValue}"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1">
+                                        <TextBlock Text="MACHINE" Style="{StaticResource ScreenFieldLabel}"/>
+                                        <TextBlock x:Name="MachXDisplay" Text="X 0.000" FontSize="13" Foreground="{StaticResource ScreenMuted}"/>
+                                        <TextBlock x:Name="MachZDisplay" Text="Z 0.000" FontSize="13" Foreground="{StaticResource ScreenMuted}"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="DISTANCE TO GO" Style="{StaticResource ScreenFieldLabel}"/>
+                                        <TextBlock Text="X 0.000" FontSize="13" Foreground="{StaticResource ScreenMuted}"/>
+                                        <TextBlock Text="Z 0.000" FontSize="13" Foreground="{StaticResource ScreenMuted}"/>
+                                    </StackPanel>
+                                </Grid>
+
+                                <UniformGrid Rows="3" Columns="3">
+                                    <TextBlock x:Name="ModalMotionDisplay" Text="G00" Style="{StaticResource ModalCode}"/>
+                                    <TextBlock x:Name="ModalPositionDisplay" Text="G90" Style="{StaticResource ModalCode}"/>
+                                    <TextBlock x:Name="ModalUnitsDisplay" Text="G21" Style="{StaticResource ModalCode}"/>
+                                    <TextBlock x:Name="ModalFeedDisplay" Text="G99" Style="{StaticResource ModalCode}"/>
+                                    <TextBlock x:Name="ModalSpindleDisplay" Text="G97" Style="{StaticResource ModalCode}"/>
+                                    <TextBlock x:Name="ModalCompDisplay" Text="G40" Style="{StaticResource ModalCode}"/>
+                                    <TextBlock x:Name="ModalWorkOffsetDisplay" Text="G54" Style="{StaticResource ModalCode}"/>
+                                    <TextBlock x:Name="ModalToolDisplay" Text="T00" Style="{StaticResource ModalCode}"/>
+                                    <TextBlock x:Name="ModalCoolantDisplay" Text="COOLANT OFF" Style="{StaticResource ModalCode}"/>
+                                </UniformGrid>
+                            </StackPanel>
+
+                            <!-- Stats block: shared across sub-views, like a real control's machine stats -->
+                            <Grid Margin="0,0,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <Grid Margin="0,0,0,2">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="110"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="RUN TIME" FontSize="11" Foreground="{StaticResource ScreenStatLabel}"/>
+                                        <TextBlock Grid.Column="1" x:Name="RunTimeDisplay" Text="0H 0M 0S" FontSize="11" Foreground="{StaticResource ScreenValue}"/>
+                                    </Grid>
+                                    <Grid Margin="0,0,0,2">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="110"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="PART COUNT" FontSize="11" Foreground="{StaticResource ScreenStatLabel}"/>
+                                        <TextBlock Grid.Column="1" x:Name="PartCountDisplay" Text="0" FontSize="11" Foreground="{StaticResource ScreenValue}"/>
+                                    </Grid>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="110"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="CYCLE TIME" FontSize="11" Foreground="{StaticResource ScreenStatLabel}"/>
+                                        <TextBlock Grid.Column="1" x:Name="CycleTimeDisplay" Text="0H 0M 0S" FontSize="11" Foreground="{StaticResource ScreenValue}"/>
+                                    </Grid>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="16,0,0,0">
+                                    <TextBlock Text="S" Style="{StaticResource ScreenFieldLabel}"/>
+                                    <TextBlock x:Name="SpindleDisplay" Text="STOPPED" FontSize="14" Foreground="{StaticResource ScreenValue}" Margin="0,0,0,4"/>
+                                    <TextBlock Text="F" Style="{StaticResource ScreenFieldLabel}"/>
+                                    <TextBlock x:Name="FeedDisplay" Text="0.00 mm/rev" FontSize="14" Foreground="{StaticResource ScreenValue}"/>
+                                </StackPanel>
+                            </Grid>
+
+                            <!-- ABS/REL/ALL/HANDLE sub-tabs -->
+                            <UniformGrid Rows="1">
+                                <Button x:Name="PosAbsSubTab" Content="ABS" Tag="ABS" Click="PosSubTab_Click" Style="{StaticResource ActiveSoftKeyButton}"/>
+                                <Button Content="REL" Style="{StaticResource DisabledSoftKeyButton}"/>
+                                <Button x:Name="PosAllSubTab" Content="ALL" Tag="ALL" Click="PosSubTab_Click" Style="{StaticResource SoftKeyButton}"/>
+                                <Button Content="HANDLE" Style="{StaticResource DisabledSoftKeyButton}"/>
+                            </UniformGrid>
+                        </StackPanel>
+
+                        <!-- PROGRAM screen -->
+                        <Grid x:Name="ProgramScreen" Visibility="Collapsed">
+
+                            <!-- Editor sub-view -->
+                            <Grid x:Name="ProgramEditorView">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <Grid Grid.Row="0" Margin="0,0,0,5">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" x:Name="ProgramEditorHeader" Text="PROGRAM (EDIT):" Foreground="{StaticResource ScreenHeader}" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                        <Button Content="Save" Click="Save_Click" Style="{StaticResource PanelButton}"/>
+                                        <Button Content="Load..." Click="Load_Click" Style="{StaticResource PanelButton}"/>
+                                    </StackPanel>
+                                </Grid>
+
+                                <TextBox x:Name="GCodeInput" Grid.Row="1" Padding="5" Background="#d8dcd2" Foreground="{StaticResource ScreenValue}"
+                                        TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
+                                        AcceptsReturn="True" AcceptsTab="True" GotFocus="Input_GotFocus" TextChanged="GCodeInput_TextChanged"
+                                        Text="G21&#xD;&#xA;G54&#xD;&#xA;T0101 M6&#xD;&#xA;G97 S1200 M3&#xD;&#xA;G0 X50 Z100&#xD;&#xA;G99 G1 Z50 F0.2&#xD;&#xA;G4 P300&#xD;&#xA;M8&#xD;&#xA;G0 Z100&#xD;&#xA;M9&#xD;&#xA;G28&#xD;&#xA;M5&#xD;&#xA;M30"/>
+
+                                <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,5,0,0">
+                                    <TextBlock Text="Recent:" Foreground="{StaticResource ScreenMuted}" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                    <StackPanel x:Name="RecentFilesPanel" Orientation="Horizontal"/>
+                                </StackPanel>
+                            </Grid>
+
+                            <!-- Folder list sub-view: PROG hard key -> FOLDER soft key -->
+                            <Grid x:Name="ProgramFolderView" Visibility="Collapsed">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Row="0" Text="PROGRAM FOLDER" Foreground="{StaticResource ScreenHeader}" FontWeight="Bold" Margin="0,0,0,6"/>
+                                <ListBox x:Name="ProgramFolderList" Grid.Row="1" Background="{StaticResource ScreenBg}"
+                                         Foreground="{StaticResource ScreenValue}" BorderBrush="{StaticResource ScreenBorder}"
+                                         FontFamily="Courier New"/>
+                            </Grid>
+
+                            <!-- BG-EDIT split-screen sub-view: FOLDER -> select program -> BG-EDIT -> select 2nd program.
+                                 Click into either box to make it "active" (mirrors SHIFT+Left/Right on a real control);
+                                 COPY reads the active box's text selection, PASTE inserts it into whichever box is active
+                                 when pressed - so the real flow is: select text, COPY, click the other box, PASTE. -->
+                            <Grid x:Name="ProgramBgEditView" Visibility="Collapsed">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="6"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <Grid Grid.Column="0">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="*"/>
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Grid.Row="0" x:Name="BgEditLeftHeader" Foreground="{StaticResource ScreenHeader}" FontWeight="Bold" Margin="0,0,0,4"/>
+                                    <TextBox x:Name="BgEditLeftBox" Grid.Row="1" Padding="5" Background="#d8dcd2" Foreground="{StaticResource ScreenValue}"
+                                             TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" AcceptsReturn="True" AcceptsTab="True"
+                                             FontFamily="Courier New" BorderBrush="{StaticResource ScreenHeader}" BorderThickness="2"
+                                             GotFocus="BgEditLeftBox_GotFocus" TextChanged="BgEditLeftBox_TextChanged"/>
+                                </Grid>
+
+                                <Grid Grid.Column="2">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="*"/>
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Grid.Row="0" x:Name="BgEditRightHeader" Foreground="{StaticResource ScreenHeader}" FontWeight="Bold" Margin="0,0,0,4"/>
+                                    <TextBox x:Name="BgEditRightBox" Grid.Row="1" Padding="5" Background="#d8dcd2" Foreground="{StaticResource ScreenValue}"
+                                             TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" AcceptsReturn="True" AcceptsTab="True"
+                                             FontFamily="Courier New" BorderBrush="{StaticResource ScreenBorder}" BorderThickness="1"
+                                             GotFocus="BgEditRightBox_GotFocus" TextChanged="BgEditRightBox_TextChanged"/>
+                                </Grid>
+                            </Grid>
+                        </Grid>
+
+                        <!-- OFFSET screen -->
+                        <Grid x:Name="OffsetScreen" Visibility="Collapsed">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel>
+                                    <TextBlock Text="TOOL OFFSETS" Style="{StaticResource ScreenFieldLabel}" Margin="0,0,0,4"/>
+                                    <DataGrid x:Name="ToolOffsetGrid" Height="170" AutoGenerateColumns="False"
+                                              Background="{StaticResource ScreenBg}" Foreground="{StaticResource ScreenValue}" RowBackground="{StaticResource ScreenBg}"
+                                              AlternatingRowBackground="{StaticResource ScreenAltRow}" BorderBrush="{StaticResource ScreenBorder}" GridLinesVisibility="Horizontal"
+                                              HorizontalGridLinesBrush="{StaticResource ScreenBorder}" CanUserAddRows="False" HorizontalScrollBarVisibility="Auto"
+                                              RowEditEnding="OffsetGrid_RowEditEnding">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="Tool#" Binding="{Binding Number}" IsReadOnly="True" Width="40"/>
+                                            <DataGridTextColumn Header="Type" Binding="{Binding Type}" Width="70"/>
+                                            <DataGridTextColumn Header="Insert" Binding="{Binding Insert}" Width="65"/>
+                                            <DataGridTextColumn Header="X Geom" Binding="{Binding XGeometry}" Width="55"/>
+                                            <DataGridTextColumn Header="Z Geom" Binding="{Binding ZGeometry}" Width="55"/>
+                                            <DataGridTextColumn Header="X Wear" Binding="{Binding XWear}" Width="50"/>
+                                            <DataGridTextColumn Header="Z Wear" Binding="{Binding ZWear}" Width="50"/>
+                                            <DataGridTextColumn Header="Nose R" Binding="{Binding NoseRadius}" Width="50"/>
+                                            <DataGridTextColumn Header="Width" Binding="{Binding Width}" Width="45"/>
+                                            <DataGridTextColumn Header="Shank" Binding="{Binding ShankSize}" Width="45"/>
+                                            <DataGridTextColumn Header="Overhang" Binding="{Binding Overhang}" Width="60"/>
+                                            <DataGridTextColumn Header="Catalog Source" Binding="{Binding CatalogDesignation}" IsReadOnly="True" Width="160"/>
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+
+                                    <TextBlock Text="WORK OFFSETS" Style="{StaticResource ScreenFieldLabel}" Margin="0,8,0,4"/>
+                                    <DataGrid x:Name="WorkOffsetGrid" Height="120" AutoGenerateColumns="False"
+                                              Background="{StaticResource ScreenBg}" Foreground="{StaticResource ScreenValue}" RowBackground="{StaticResource ScreenBg}"
+                                              AlternatingRowBackground="{StaticResource ScreenAltRow}" BorderBrush="{StaticResource ScreenBorder}" GridLinesVisibility="Horizontal"
+                                              HorizontalGridLinesBrush="{StaticResource ScreenBorder}" CanUserAddRows="False"
+                                              RowEditEnding="OffsetGrid_RowEditEnding">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="G-Code" Binding="{Binding GCode}" IsReadOnly="True" Width="55"/>
+                                            <DataGridTextColumn Header="X" Binding="{Binding X}" Width="70"/>
+                                            <DataGridTextColumn Header="Z" Binding="{Binding Z}" Width="70"/>
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+
+                                    <TextBlock Text="TOOL CATALOG" Style="{StaticResource ScreenFieldLabel}" Margin="0,8,0,4"/>
+                                    <ListBox x:Name="ToolCatalogList" Height="150" Background="{StaticResource ScreenBg}"
+                                             Foreground="{StaticResource ScreenValue}" BorderBrush="{StaticResource ScreenBorder}"/>
+                                    <StackPanel Orientation="Horizontal" Margin="0,6,0,10">
+                                        <TextBlock Text="Assign to Tool #:" VerticalAlignment="Center" Foreground="{StaticResource ScreenMuted}" Margin="0,0,6,0"/>
+                                        <ComboBox x:Name="AssignToolNumberCombo" Width="50"/>
+                                        <Button Content="Assign" Click="AssignCatalogEntry_Click" Style="{StaticResource PanelButton}" Margin="8,0,0,0"/>
+                                        <Button Content="Tool Builder..." Click="OpenToolBuilder_Click" Style="{StaticResource PanelButton}" Margin="16,0,0,0"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Grid>
+
+                        <!-- ALARM screen -->
+                        <Grid x:Name="AlarmScreen" Visibility="Collapsed">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <TextBlock Grid.Row="0" Text="ACTIVE ALARMS" Style="{StaticResource ScreenFieldLabel}" Margin="0,0,0,4"/>
+                            <ListBox x:Name="AlarmList" Grid.Row="1" Background="{StaticResource ScreenBg}" Foreground="{StaticResource AlarmRed}"
+                                     BorderBrush="{StaticResource ScreenBorder}" FontWeight="Bold"/>
+                        </Grid>
+
+                        <!-- MACRO screen: Custom Macro B variable viewer -->
+                        <Grid x:Name="MacroScreen" Visibility="Collapsed">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel>
+                                    <TextBlock Text="LOCAL VARIABLES (#1-#33, current scope)" Style="{StaticResource ScreenFieldLabel}" Margin="0,0,0,4"/>
+                                    <DataGrid x:Name="MacroLocalGrid" Height="220" AutoGenerateColumns="False" IsReadOnly="True"
+                                              Background="{StaticResource ScreenBg}" Foreground="{StaticResource ScreenValue}" RowBackground="{StaticResource ScreenBg}"
+                                              AlternatingRowBackground="{StaticResource ScreenAltRow}" BorderBrush="{StaticResource ScreenBorder}" GridLinesVisibility="Horizontal"
+                                              HorizontalGridLinesBrush="{StaticResource ScreenBorder}" CanUserAddRows="False">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="Variable" Binding="{Binding Variable}" Width="80"/>
+                                            <DataGridTextColumn Header="Value" Binding="{Binding Value}" Width="120"/>
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+
+                                    <TextBlock Text="COMMON VARIABLES (#100-#999, assigned only)" Style="{StaticResource ScreenFieldLabel}" Margin="0,8,0,4"/>
+                                    <DataGrid x:Name="MacroCommonGrid" Height="150" AutoGenerateColumns="False" IsReadOnly="True"
+                                              Background="{StaticResource ScreenBg}" Foreground="{StaticResource ScreenValue}" RowBackground="{StaticResource ScreenBg}"
+                                              AlternatingRowBackground="{StaticResource ScreenAltRow}" BorderBrush="{StaticResource ScreenBorder}" GridLinesVisibility="Horizontal"
+                                              HorizontalGridLinesBrush="{StaticResource ScreenBorder}" CanUserAddRows="False">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="Variable" Binding="{Binding Variable}" Width="80"/>
+                                            <DataGridTextColumn Header="Value" Binding="{Binding Value}" Width="120"/>
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                    <TextBlock Text="(No common variables assigned yet)" x:Name="MacroCommonEmptyLabel" Foreground="{StaticResource ScreenMuted}" Margin="0,4,0,0"/>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Grid>
+
+                        <!-- HELP screen -->
+                        <Grid x:Name="HelpScreen" Visibility="Collapsed">
+                            <ScrollViewer x:Name="HelpScrollViewer" VerticalScrollBarVisibility="Auto">
+                                <StackPanel x:Name="HelpContent" Margin="0,0,8,0"/>
+                            </ScrollViewer>
+                        </Grid>
+
+                    </Grid>
+
+                    <!-- Persistent status bar -->
+                    <Grid Grid.Row="1" Margin="0,6,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" x:Name="StatusModeDisplay" Text="EDIT" Foreground="{StaticResource ScreenHeader}" FontWeight="Bold" FontSize="12"/>
+                        <Border Grid.Column="1" x:Name="StatusEmgBadge" Background="Transparent" Padding="5,1" Margin="8,0">
+                            <TextBlock x:Name="StatusEmgText" Text="--EMG--" Foreground="{StaticResource ScreenHeader}" FontWeight="Bold" FontSize="11"/>
+                        </Border>
+                        <Border Grid.Column="2" x:Name="StatusAlarmBadge" Background="{StaticResource AlarmRed}" Padding="5,1" Margin="0,0,8,0" Visibility="Collapsed">
+                            <TextBlock Text="ALM" Foreground="White" FontWeight="Bold" FontSize="11"/>
+                        </Border>
+                        <TextBlock Grid.Column="3" x:Name="StatusClockDisplay" Text="00:00:00" Foreground="{StaticResource ScreenValue}" FontSize="12"/>
+                    </Grid>
+
+                    <!-- Persistent command line -->
+                    <Grid Grid.Row="2" Margin="0,6,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Grid.Column="0" Background="#d8d8d8" Padding="4,3">
+                            <DockPanel>
+                                <TextBlock Text="A&gt;" Foreground="Black" FontWeight="Bold" DockPanel.Dock="Left" Margin="0,0,4,0"/>
+                                <TextBox x:Name="CommandLineInput" Background="Transparent" Foreground="Black" BorderThickness="0"
+                                        TextWrapping="NoWrap" VerticalContentAlignment="Center" GotFocus="Input_GotFocus"/>
+                            </DockPanel>
+                        </Border>
+                        <Button Grid.Column="1" Content="Run" Click="RunMdi_Click" Style="{StaticResource PanelButton}" Margin="6,0,0,0"/>
+                    </Grid>
+
+                    <!-- Soft-key tab row -->
+                    <UniformGrid Grid.Row="3" Rows="1" Margin="0,8,0,0">
+                        <Button x:Name="PosTabButton" Content="POS" Tag="POS" Click="ScreenButton_Click" Style="{StaticResource SoftKeyButton}"/>
+                        <Button x:Name="ProgramTabButton" Content="PROGRAM" Tag="PROGRAM" Click="ScreenButton_Click" Style="{StaticResource SoftKeyButton}"/>
+                        <Button x:Name="OffsetTabButton" Content="OFFSET" Tag="OFFSET" Click="ScreenButton_Click" Style="{StaticResource SoftKeyButton}"/>
+                        <Button x:Name="AlarmTabButton" Content="ALARM" Tag="ALARM" Click="ScreenButton_Click" Style="{StaticResource SoftKeyButton}"/>
+                        <Button x:Name="MacroTabButton" Content="MACRO" Tag="MACRO" Click="ScreenButton_Click" Style="{StaticResource SoftKeyButton}"/>
+                        <Button x:Name="HelpTabButton" Content="HELP" Tag="HELP" Click="ScreenButton_Click" Style="{StaticResource SoftKeyButton}"/>
+                    </UniformGrid>
+
+                    <!-- Hardware soft-key strip - data-driven from _softKeyStack (SoftKeyMenu). Real
+                         program-management navigation (FOLDER/OPRT/DEVICE CHANGE) drives this on the
+                         PROGRAM screen; other screens currently leave it all blank/disabled. -->
+                    <UniformGrid Grid.Row="4" Rows="1" Margin="0,2,0,0">
+                        <Button x:Name="SoftKey0" Tag="0" Click="SoftKeyButton_Click" Style="{StaticResource DisabledSoftKeyButton}"/>
+                        <Button x:Name="SoftKey1" Tag="1" Click="SoftKeyButton_Click" Style="{StaticResource DisabledSoftKeyButton}"/>
+                        <Button x:Name="SoftKey2" Tag="2" Click="SoftKeyButton_Click" Style="{StaticResource DisabledSoftKeyButton}"/>
+                        <Button x:Name="SoftKey3" Tag="3" Click="SoftKeyButton_Click" Style="{StaticResource DisabledSoftKeyButton}"/>
+                        <Button x:Name="SoftKey4" Tag="4" Click="SoftKeyButton_Click" Style="{StaticResource DisabledSoftKeyButton}"/>
+                        <Button x:Name="SoftKey5" Tag="5" Click="SoftKeyButton_Click" Style="{StaticResource DisabledSoftKeyButton}"/>
+                        <Button x:Name="SoftKey6" Tag="6" Click="SoftKeyButton_Click" Style="{StaticResource DisabledSoftKeyButton}"/>
+                    </UniformGrid>
+                </Grid>
+            </Border>
+
+            <!-- Action bar -->
+            <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,0,0,8">
+                <Button Content="Execute (Cycle Start)" Click="Execute_Click" Background="#004400" Foreground="#00ff00" Padding="10" Margin="0,0,8,0"/>
+                <Button Content="Reset" Click="Reset_Click" Background="#1a1a1a" Foreground="#00ff00" Padding="10"/>
+            </StackPanel>
+
+            <!-- Console -->
+            <Grid Grid.Row="4">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                <TextBlock Grid.Row="0" Text="Console:" Margin="0,0,0,5"/>
+                <TextBox x:Name="Console" Grid.Row="1" Padding="5" Background="#0a0a0a" Foreground="#00ff00"
+                        IsReadOnly="True" VerticalScrollBarVisibility="Auto"/>
+            </Grid>
+        </Grid>
+
+        <!-- Right: MDI keypad -->
+        <Grid Grid.Row="0" Grid.Column="2" Background="#1a1a1a" Margin="0,10,10,10">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0" Text="MDI KEYPAD" Style="{StaticResource FieldLabel}" Margin="4,4,0,6"/>
+
+            <UniformGrid x:Name="DualKeyGrid" Grid.Row="1" Rows="4" Columns="6" Margin="0,0,0,8"/>
+
+            <UniformGrid Grid.Row="2" Rows="2" Columns="6" Margin="0,0,0,8">
+                <Button Content="POS" Tag="POS" Click="ScreenButton_Click" Style="{StaticResource FunctionKey}"/>
+                <Button Content="PROG" Tag="PROGRAM" Click="ScreenButton_Click" Style="{StaticResource FunctionKey}"/>
+                <Button Content="OFS/SET" Tag="OFFSET" Click="ScreenButton_Click" Style="{StaticResource FunctionKey}"/>
+                <Button x:Name="ShiftKeyButton" Content="SHIFT" Click="ShiftKey_Click" Style="{StaticResource FunctionKey}"/>
+                <Button Content="CAN" Click="CanKey_Click" Style="{StaticResource FunctionKey}"/>
+                <Button Content="INPUT" Click="InputKey_Click" Style="{StaticResource FunctionKey}"/>
+                <Button Content="SYSTEM" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                <Button Content="MESSAGE" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                <Button Content="CSTM/GR" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                <Button Content="ALTER" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                <Button Content="INSERT" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                <Button Content="DELETE" Click="DeleteKey_Click" Style="{StaticResource FunctionKey}"/>
+            </UniformGrid>
+
+            <Grid Grid.Row="3">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <Button Grid.Row="0" Grid.Column="0" Content="PAGE&#10;UP" Click="PageUp_Click" Style="{StaticResource FunctionKey}"/>
+                <Button Grid.Row="0" Grid.Column="1" Content="&#8593;" Click="ArrowUp_Click" Style="{StaticResource FunctionKey}"/>
+                <Button Grid.Row="0" Grid.Column="2" Content="HELP" Tag="HELP" Click="ScreenButton_Click" Style="{StaticResource FunctionKey}"/>
+
+                <Button Grid.Row="1" Grid.Column="0" Content="&#8592;" Click="ArrowLeft_Click" Style="{StaticResource FunctionKey}"/>
+                <Button Grid.Row="1" Grid.Column="1" Content="&#9679;" IsEnabled="False" Style="{StaticResource FunctionKey}"/>
+                <Button Grid.Row="1" Grid.Column="2" Content="&#8594;" Click="ArrowRight_Click" Style="{StaticResource FunctionKey}"/>
+
+                <Button Grid.Row="2" Grid.Column="0" Content="PAGE&#10;DOWN" Click="PageDown_Click" Style="{StaticResource FunctionKey}"/>
+                <Button Grid.Row="2" Grid.Column="1" Content="&#8595;" Click="ArrowDown_Click" Style="{StaticResource FunctionKey}"/>
+                <Button Grid.Row="2" Grid.Column="2" Content="RESET" Click="Reset_Click" Style="{StaticResource FunctionKey}" Background="#440000"/>
+            </Grid>
+        </Grid>
+
+        <!-- Bottom: Operator panel. Most toggle keys are visual-only placeholders (single block, dry
+             run, MC lock etc. aren't modeled by the engine and shouldn't be faked) - COOLANT, CYCLE
+             START and CYCLE STOP alias real engine actions. Override dials are static gauges, not
+             wired to an actual feed/spindle multiplier - a bigger feature than this visual pass. -->
+        <Border Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Background="#4a4a52" Margin="10,8,10,10" Padding="12">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <UniformGrid Grid.Column="0" Rows="5" Columns="4" Margin="0,0,16,0">
+                    <Button Content="SINGLE&#10;BLOCK" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                    <Button Content="BLOCK&#10;SKIP" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                    <Button Content="OPT&#10;STOP" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                    <Button Content="DRY&#10;RUN" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+
+                    <Button Content="RESTART" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                    <Button Content="MC&#10;LOCK" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                    <Button x:Name="CoolantToggleButton" Content="COOLANT" Click="CoolantToggle_Click" Style="{StaticResource FunctionKey}"/>
+                    <Button Content="TOOL" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+
+                    <Button Content="X" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                    <Button Content="Z" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                    <Button Content="4" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                    <Button Content="5" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+
+                    <Button Content="6" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                    <Button Content="+" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                    <Button Content="RAPID" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                    <Button Content="-" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+
+                    <Button Content="CYCLE&#10;STOP" Click="Reset_Click" Style="{StaticResource FunctionKey}"/>
+                    <Button Content="CYCLE&#10;START" Click="Execute_Click" Style="{StaticResource FunctionKey}" Background="#004400"/>
+                    <Button Content="PRG&#10;STOP" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                    <Button Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                </UniformGrid>
+
+                <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,20,0">
+                    <Grid Width="80" Height="80" HorizontalAlignment="Center">
+                        <Ellipse Width="80" Height="80" Fill="#e8c000"/>
+                        <Ellipse x:Name="EStopEllipse" Width="58" Height="58" Fill="#c81414" Stroke="#600000" StrokeThickness="2"
+                                 Cursor="Hand" MouseLeftButtonDown="EStop_Click"/>
+                    </Grid>
+                    <TextBlock Text="EMERGENCY STOP" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="0,0,16,0">
+                    <Grid Width="64" Height="64">
+                        <Ellipse Fill="#1a1a1a" Stroke="#777" StrokeThickness="1.5"/>
+                        <Line X1="32" Y1="32" X2="48" Y2="16" Stroke="White" StrokeThickness="2"/>
+                    </Grid>
+                    <TextBlock Text="FEED %" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+                </StackPanel>
+
+                <StackPanel Grid.Column="3" VerticalAlignment="Center" Margin="0,0,16,0">
+                    <Grid Width="64" Height="64">
+                        <Ellipse Fill="#1a1a1a" Stroke="#777" StrokeThickness="1.5"/>
+                        <Line X1="32" Y1="32" X2="48" Y2="16" Stroke="White" StrokeThickness="2"/>
+                    </Grid>
+                    <TextBlock Text="SPINDLE %" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+                </StackPanel>
+
+                <StackPanel Grid.Column="4" VerticalAlignment="Bottom" HorizontalAlignment="Right">
+                    <Border x:Name="PowerToggleButton" Width="30" Height="30" Background="#2a2a2a" BorderBrush="#666" BorderThickness="1"
+                            Cursor="Hand" MouseLeftButtonDown="PowerToggle_Click" Margin="0,0,0,10">
+                        <TextBlock Text="&#9211;" Foreground="{StaticResource OkGreen}" FontSize="14" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <TextBlock Text="FANUC" Foreground="#c81414" FontWeight="Bold" FontSize="11" HorizontalAlignment="Right"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
