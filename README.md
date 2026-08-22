@@ -112,9 +112,10 @@ dotnet run
 This models a 2-axis turning center closely enough to be useful for learning and testing programs,
 not a certified twin of any real control. Not currently modeled: Custom Macro B indirect addressing
 (`#[expr]`) and multiple statements per block, and general system variables beyond the three listed
-above. The 3D view is a first pass: a plain cylinder stands in for the chuck (not real jaw
-geometry), it shows the workpiece only (no tool/toolpath in 3D), there's no cutaway/cross-section
-view, and a through-bore right at the face isn't specially mitered against the end cap.
+above. The 3D view is a first pass: the chuck is a simplified 3-jaw stand-in (flat wedge jaws, not
+manufacturer-accurate geometry), a small marker shows the tool's current position but the toolpath
+itself isn't drawn in 3D, there's no cutaway/cross-section view, and a through-bore right at the
+face isn't specially mitered against the end cap.
 
 ## License
 
