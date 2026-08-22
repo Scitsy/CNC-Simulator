@@ -1,0 +1,12 @@
+# Build output
+bin/
+obj/
+*.user
+
+# Visual Studio cache/options
+.vs/
+
+# Reference/design material - large (500+ MB), includes third-party SSCNC screenshots and
+# hardware-manual images used for UI reference while building; not part of the shipped app,
+# not referenced by any .cs/.xaml file. Kept locally, not in version control.
+ReferenceMaterial/

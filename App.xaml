@@ -1,0 +1,33 @@
+<Application x:Class="FanucSimulator.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             StartupUri="MainWindow.xaml">
+    <Application.Resources>
+        <!-- Shared across MainWindow and any secondary window (e.g. ToolBuilderWindow) - the
+             light LCD screen theme + panel-button chrome. Everything else stays local to
+             MainWindow.xaml's own Window.Resources since only MainWindow uses it. -->
+        <SolidColorBrush x:Key="ScreenBg" Color="#c8ccc4"/>
+        <SolidColorBrush x:Key="ScreenAltRow" Color="#bcc0b8"/>
+        <SolidColorBrush x:Key="ScreenBorder" Color="#8a8f86"/>
+        <SolidColorBrush x:Key="ScreenHeader" Color="#c0208c"/>
+        <SolidColorBrush x:Key="ScreenValue" Color="#141414"/>
+        <SolidColorBrush x:Key="ScreenStatLabel" Color="#1a50a8"/>
+        <SolidColorBrush x:Key="ScreenMuted" Color="#5a5f58"/>
+
+        <Style x:Key="PanelButton" TargetType="Button">
+            <Setter Property="Background" Value="#1a1a1a"/>
+            <Setter Property="Foreground" Value="#00ff00"/>
+            <Setter Property="Padding" Value="6,4"/>
+            <Setter Property="Margin" Value="0,0,4,0"/>
+            <Setter Property="BorderBrush" Value="#444"/>
+        </Style>
+        <Style x:Key="DisabledPanelButton" TargetType="Button" BasedOn="{StaticResource PanelButton}">
+            <Setter Property="IsEnabled" Value="False"/>
+            <Setter Property="Foreground" Value="#444"/>
+        </Style>
+        <Style x:Key="ScreenFieldLabel" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="Foreground" Value="{StaticResource ScreenMuted}"/>
+        </Style>
+    </Application.Resources>
+</Application>
