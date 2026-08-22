@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -52,23 +53,35 @@ namespace FanucSimulator
         {
             var stock = _sim.Stock;
 
-            // Re-fit distance/target (but never touch the user's chosen azimuth/elevation) whenever
-            // the stock's size has changed enough to matter - not just on first open. Otherwise
-            // switching to a much bigger or smaller stock than whatever was last framed leaves the
-            // camera badly mismatched (too close/inside the part, or too far to see it) until the
-            // operator thinks to hit "Reset Orbit" themselves.
+            // Frame from the stock's own envelope AND wherever the toolpath has actually gone - a
+            // rapid clearance move (e.g. retracting to a tool-change position) routinely reaches well
+            // beyond the part itself, exactly the same reason RenderLathe's 2D auto-fit already
+            // accounts for toolpath extent, not just stock size.
             var maxRadius = 0.0;
             for (int i = 0; i <= StockProfile.Resolution; i++)
                 maxRadius = Math.Max(maxRadius, stock.OuterX[i] / 2.0);
-            var partLength = stock.ZEnd - stock.ZStart;
+            var zMin = stock.ZStart;
+            var zMax = stock.ZEnd;
+            foreach (var (x, z, _) in _sim.ToolPath)
+            {
+                maxRadius = Math.Max(maxRadius, x / 2.0);
+                zMin = Math.Min(zMin, z);
+                zMax = Math.Max(zMax, z);
+            }
+            var partLength = zMax - zMin;
 
+            // Re-fit distance/target (but never touch the user's chosen azimuth/elevation) whenever
+            // the framed envelope has changed enough to matter - not just on first open. Otherwise
+            // switching to a much bigger or smaller stock/toolpath than whatever was last framed
+            // leaves the camera badly mismatched (too close/inside the part, or too far to see it)
+            // until the operator thinks to hit "Reset Orbit" themselves.
             var sizeChangedSubstantially = _hasFramedOnce &&
                 (Math.Abs(maxRadius - _lastFramedMaxRadius) > _lastFramedMaxRadius * 0.25 ||
                  Math.Abs(partLength - _lastFramedPartLength) > _lastFramedPartLength * 0.25);
 
             if (!_hasFramedOnce || sizeChangedSubstantially)
             {
-                FrameCamera(stock);
+                FrameCamera(maxRadius, zMin, zMax, partLength);
                 _lastFramedMaxRadius = maxRadius;
                 _lastFramedPartLength = partLength;
                 _hasFramedOnce = true;
@@ -107,19 +120,15 @@ namespace FanucSimulator
 
             group.Children.Add(BuildChuck(stock.ZStart, stock.OuterX[0]));
             group.Children.Add(BuildToolMarker(_sim.X, _sim.Z));
+            group.Children.Add(BuildToolPath(_sim.ToolPath));
 
             MainViewport.Children.Clear();
             MainViewport.Children.Add(new ModelVisual3D { Content = group });
         }
 
-        private void FrameCamera(StockProfile stock)
+        private void FrameCamera(double maxRadius, double zMin, double zMax, double partLength)
         {
-            var maxRadius = 0.0;
-            for (int i = 0; i <= StockProfile.Resolution; i++)
-                maxRadius = Math.Max(maxRadius, stock.OuterX[i] / 2.0);
-
-            var partLength = stock.ZEnd - stock.ZStart;
-            _cameraTarget = new Point3D((stock.ZStart + stock.ZEnd) / 2.0, 0, 0);
+            _cameraTarget = new Point3D((zMin + zMax) / 2.0, 0, 0);
             _cameraDistance = Math.Max(partLength, maxRadius * 3) * 1.6;
         }
 
@@ -357,6 +366,51 @@ namespace FanucSimulator
             material.Children.Add(new DiffuseMaterial(new SolidColorBrush(Color.FromRgb(60, 200, 60))));
             material.Children.Add(new EmissiveMaterial(new SolidColorBrush(Color.FromRgb(30, 120, 30))));
             return new GeometryModel3D(mesh, material) { BackMaterial = material };
+        }
+
+        // Every ToolPath segment as a thin "plus-cross-section" ribbon (a flat quad extended slightly
+        // in Z, plus a second extended slightly in Y) - visible from most viewing angles without
+        // needing to orient a proper tube mesh along each segment's own direction. All ToolPath
+        // points sit at the same angle=0 plane as the tool marker (this is fundamentally a 2-axis
+        // model - there's no C-axis/angular position to place them at anything else). Colored to
+        // match the 2D canvas's own convention: blue rapid, green feed, red collision.
+        private static Model3DGroup BuildToolPath(List<(double X, double Z, string Type)> toolPath)
+        {
+            var group = new Model3DGroup();
+            if (toolPath.Count < 2)
+                return group;
+
+            var rapidMesh = new MeshGeometry3D();
+            var feedMesh = new MeshGeometry3D();
+            var collisionMesh = new MeshGeometry3D();
+            const double half = 0.6; // mm - thin, a schematic line, not a real tool sweep
+
+            for (int i = 0; i < toolPath.Count - 1; i += 2)
+            {
+                var p1 = toolPath[i];
+                var p2 = toolPath[i + 1];
+                var a = new Point3D(p1.Z, p1.X / 2.0, 0);
+                var b = new Point3D(p2.Z, p2.X / 2.0, 0);
+                var mesh = p1.Type switch { "rapid" => rapidMesh, "collision" => collisionMesh, _ => feedMesh };
+
+                AddQuad(mesh, new Point3D(a.X, a.Y, -half), new Point3D(a.X, a.Y, half), new Point3D(b.X, b.Y, half), new Point3D(b.X, b.Y, -half));
+                AddQuad(mesh, new Point3D(a.X, a.Y - half, 0), new Point3D(a.X, a.Y + half, 0), new Point3D(b.X, b.Y + half, 0), new Point3D(b.X, b.Y - half, 0));
+            }
+
+            AddToolPathMesh(group, rapidMesh, Color.FromRgb(0, 191, 255));
+            AddToolPathMesh(group, feedMesh, Color.FromRgb(50, 205, 50));
+            AddToolPathMesh(group, collisionMesh, Color.FromRgb(220, 40, 40));
+            return group;
+        }
+
+        private static void AddToolPathMesh(Model3DGroup group, MeshGeometry3D mesh, Color color)
+        {
+            if (mesh.Positions.Count == 0)
+                return;
+            var material = new MaterialGroup();
+            material.Children.Add(new DiffuseMaterial(new SolidColorBrush(color)));
+            material.Children.Add(new EmissiveMaterial(new SolidColorBrush(Color.FromRgb((byte)(color.R / 3), (byte)(color.G / 3), (byte)(color.B / 3)))));
+            group.Children.Add(new GeometryModel3D(mesh, material) { BackMaterial = material });
         }
 
         private void Viewport_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
