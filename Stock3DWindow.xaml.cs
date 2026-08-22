@@ -16,10 +16,12 @@ namespace FanucSimulator
     // revolved around X. Y-up camera convention (standard for a 3D viewer), orbited via mouse drag
     // around the part's own center point.
     //
-    // Refined once from the very first pass: BuildChuck now builds a body + 3 jaw blocks (still a
-    // simplified stand-in, not a manufacturer-accurate chuck), and Refresh() adds a small marker at
-    // the tool's current position. Still not modeled: the toolpath itself in 3D, a cutaway/cross-
-    // section view, and mitering a through-bore specially against the end cap.
+    // Refined since the very first pass: BuildChuck now builds a body + 3 jaw blocks (still a
+    // simplified stand-in, not a manufacturer-accurate chuck); Refresh() adds a small marker at the
+    // tool's current position plus the toolpath itself; and the "Cutaway view" checkbox sweeps the
+    // revolved solid only 180 degrees instead of 360, exposing internal bores that would otherwise
+    // only be visible where they happen to be open at an end. Still not modeled: mitering a
+    // through-bore specially against the end cap.
     public partial class Stock3DWindow : Window
     {
         // Not readonly - MainWindow's Reset replaces its whole _sim instance (a fresh LatheSimulator,
@@ -97,7 +99,21 @@ namespace FanucSimulator
             stockMaterial.Children.Add(new DiffuseMaterial(new SolidColorBrush(Color.FromRgb(150, 155, 160))));
             stockMaterial.Children.Add(new SpecularMaterial(new SolidColorBrush(Color.FromRgb(200, 200, 210)), 60));
 
-            var outerMesh = BuildRevolvedMesh(stock, i => stock.OuterX[i], inward: false);
+            // Cutaway view: sweep only a half-revolution instead of the full circle, exposing
+            // whatever's inside (a bore that isn't open at either end is otherwise invisible from
+            // outside the solid). The half removed is always the one facing the camera - the swept
+            // (visible) half starts at azimuth+90deg, so whichever way the operator has orbited to,
+            // they're looking straight into the open cut rather than at a fixed angle that might be
+            // edge-on or facing away from them. Half the segment count keeps the same angular
+            // resolution per segment as the full-revolution case (180deg/16 == 360deg/32). The chuck
+            // is deliberately NOT cut - its own interior isn't modeled/interesting, cutting it too
+            // would just be extra complexity for nothing.
+            var cutaway = CutawayCheck.IsChecked == true;
+            var segments = cutaway ? CircumferentialSegments / 2 : CircumferentialSegments;
+            var angleSpan = cutaway ? Math.PI : 2 * Math.PI;
+            var cutStartAngle = _azimuth + Math.PI / 2;
+
+            var outerMesh = BuildRevolvedMesh(stock, i => stock.OuterX[i], inward: false, segments, angleSpan, cutStartAngle);
             group.Children.Add(new GeometryModel3D(outerMesh, stockMaterial) { BackMaterial = stockMaterial });
 
             var hasBore = false;
@@ -106,7 +122,7 @@ namespace FanucSimulator
 
             if (hasBore)
             {
-                var innerMesh = BuildRevolvedMesh(stock, i => stock.InnerX[i], inward: true);
+                var innerMesh = BuildRevolvedMesh(stock, i => stock.InnerX[i], inward: true, segments, angleSpan, cutStartAngle);
                 group.Children.Add(new GeometryModel3D(innerMesh, stockMaterial) { BackMaterial = stockMaterial });
             }
 
@@ -114,8 +130,25 @@ namespace FanucSimulator
             var faceInnerDiameter = stock.InnerX[StockProfile.Resolution];
             if (faceInnerDiameter < stock.OuterX[StockProfile.Resolution] - 1e-6)
             {
-                var cap = BuildEndCap(stock.ZEnd, faceInnerDiameter, stock.OuterX[StockProfile.Resolution]);
+                var cap = BuildEndCap(stock.ZEnd, faceInnerDiameter, stock.OuterX[StockProfile.Resolution], segments, angleSpan, cutStartAngle);
                 group.Children.Add(new GeometryModel3D(cap, stockMaterial) { BackMaterial = stockMaterial });
+            }
+
+            if (cutaway)
+            {
+                // The two flat faces exposed by the cut - each follows the material's own actual
+                // cross-section (outer to inner boundary, along the whole Z length), the same shape
+                // the 2D canvas already draws, just placed at the cut's current angle in 3D instead of
+                // always facing the viewer. A distinct color reads as "this is a cut surface," a
+                // standard CAD-viewer convention, not the part's real material.
+                var cutMaterial = new MaterialGroup();
+                cutMaterial.Children.Add(new DiffuseMaterial(new SolidColorBrush(Color.FromRgb(200, 150, 90))));
+                cutMaterial.Children.Add(new SpecularMaterial(new SolidColorBrush(Color.FromRgb(230, 190, 140)), 20));
+
+                var cutFaceStart = BuildCutFace(stock, cutStartAngle);
+                var cutFaceEnd = BuildCutFace(stock, cutStartAngle + angleSpan);
+                group.Children.Add(new GeometryModel3D(cutFaceStart, cutMaterial) { BackMaterial = cutMaterial });
+                group.Children.Add(new GeometryModel3D(cutFaceEnd, cutMaterial) { BackMaterial = cutMaterial });
             }
 
             group.Children.Add(BuildChuck(stock.ZStart, stock.OuterX[0]));
@@ -144,34 +177,38 @@ namespace FanucSimulator
             MainCamera.UpDirection = new Vector3D(0, 1, 0);
         }
 
-        // Revolves one boundary (outer or inner diameter, as a function of ring index) 360 degrees
-        // around the X axis. `inward` reverses triangle winding so the surface's computed normals
-        // face toward the axis (correct for a bore's inside wall) instead of away from it.
-        private static MeshGeometry3D BuildRevolvedMesh(StockProfile stock, Func<int, double> diameterAt, bool inward)
+        // Revolves one boundary (outer or inner diameter, as a function of ring index) around the X
+        // axis, either the full 360 degrees or a partial sweep (cutaway view - angleSpan < 2*PI cuts
+        // the solid open instead of wrapping all the way around). `inward` reverses triangle winding
+        // so the surface's computed normals face toward the axis (correct for a bore's inside wall)
+        // instead of away from it.
+        private static MeshGeometry3D BuildRevolvedMesh(StockProfile stock, Func<int, double> diameterAt, bool inward, int segments, double angleSpan, double startAngle = 0)
         {
             var mesh = new MeshGeometry3D();
             int rings = StockProfile.Resolution + 1;
+            var closed = angleSpan >= 2 * Math.PI - 1e-6;
+            var pointsPerRing = closed ? segments : segments + 1; // a partial sweep needs a closing column at the end angle, not a wraparound
 
             for (int i = 0; i < rings; i++)
             {
                 var x = stock.SampleZ(i);
                 var radius = diameterAt(i) / 2.0;
-                for (int j = 0; j < CircumferentialSegments; j++)
+                for (int j = 0; j < pointsPerRing; j++)
                 {
-                    var angle = j * 2 * Math.PI / CircumferentialSegments;
+                    var angle = startAngle + j * angleSpan / segments;
                     mesh.Positions.Add(new Point3D(x, radius * Math.Cos(angle), radius * Math.Sin(angle)));
                 }
             }
 
             for (int i = 0; i < rings - 1; i++)
             {
-                for (int j = 0; j < CircumferentialSegments; j++)
+                for (int j = 0; j < segments; j++)
                 {
-                    var jNext = (j + 1) % CircumferentialSegments;
-                    var a = i * CircumferentialSegments + j;
-                    var b = i * CircumferentialSegments + jNext;
-                    var c = (i + 1) * CircumferentialSegments + j;
-                    var d = (i + 1) * CircumferentialSegments + jNext;
+                    var jNext = closed ? (j + 1) % pointsPerRing : j + 1;
+                    var a = i * pointsPerRing + j;
+                    var b = i * pointsPerRing + jNext;
+                    var c = (i + 1) * pointsPerRing + j;
+                    var d = (i + 1) * pointsPerRing + jNext;
 
                     if (!inward)
                     {
@@ -189,8 +226,9 @@ namespace FanucSimulator
             return mesh;
         }
 
-        // A flat annulus (or a solid disk, if innerDiameter is ~0) at a fixed X - the stock's face.
-        private static MeshGeometry3D BuildEndCap(double x, double innerDiameter, double outerDiameter)
+        // A flat annulus (or a solid disk, if innerDiameter is ~0) at a fixed X - the stock's face,
+        // or (with segments/angleSpan < full) just the cutaway view's half of it.
+        private static MeshGeometry3D BuildEndCap(double x, double innerDiameter, double outerDiameter, int segments, double angleSpan, double startAngle = 0)
         {
             var mesh = new MeshGeometry3D();
             var outerR = outerDiameter / 2.0;
@@ -199,38 +237,70 @@ namespace FanucSimulator
             if (innerR < 1e-6)
             {
                 mesh.Positions.Add(new Point3D(x, 0, 0));
-                for (int j = 0; j <= CircumferentialSegments; j++)
+                for (int j = 0; j <= segments; j++)
                 {
-                    var angle = j * 2 * Math.PI / CircumferentialSegments;
+                    var angle = startAngle + j * angleSpan / segments;
                     mesh.Positions.Add(new Point3D(x, outerR * Math.Cos(angle), outerR * Math.Sin(angle)));
                 }
-                for (int j = 1; j <= CircumferentialSegments; j++)
+                var closed = angleSpan >= 2 * Math.PI - 1e-6;
+                for (int j = 1; j <= segments; j++)
                 {
                     mesh.TriangleIndices.Add(0);
                     mesh.TriangleIndices.Add(j);
-                    mesh.TriangleIndices.Add(j == CircumferentialSegments ? 1 : j + 1);
+                    mesh.TriangleIndices.Add(j == segments ? (closed ? 1 : j) : j + 1);
                 }
             }
             else
             {
-                for (int j = 0; j <= CircumferentialSegments; j++)
+                for (int j = 0; j <= segments; j++)
                 {
-                    var angle = j * 2 * Math.PI / CircumferentialSegments;
+                    var angle = startAngle + j * angleSpan / segments;
                     mesh.Positions.Add(new Point3D(x, innerR * Math.Cos(angle), innerR * Math.Sin(angle)));
                 }
                 var outerBase = mesh.Positions.Count;
-                for (int j = 0; j <= CircumferentialSegments; j++)
+                for (int j = 0; j <= segments; j++)
                 {
-                    var angle = j * 2 * Math.PI / CircumferentialSegments;
+                    var angle = startAngle + j * angleSpan / segments;
                     mesh.Positions.Add(new Point3D(x, outerR * Math.Cos(angle), outerR * Math.Sin(angle)));
                 }
-                for (int j = 0; j < CircumferentialSegments; j++)
+                for (int j = 0; j < segments; j++)
                 {
                     var i0 = j; var i1 = j + 1;
                     var o0 = outerBase + j; var o1 = outerBase + j + 1;
                     mesh.TriangleIndices.Add(i0); mesh.TriangleIndices.Add(o0); mesh.TriangleIndices.Add(i1);
                     mesh.TriangleIndices.Add(i1); mesh.TriangleIndices.Add(o0); mesh.TriangleIndices.Add(o1);
                 }
+            }
+
+            return mesh;
+        }
+
+        // One of the cutaway view's two exposed flat faces, at a fixed angle - follows the material's
+        // actual cross-section (outer boundary down to inner boundary, i.e. 0 if solid) along the
+        // whole Z length, the same shape the 2D canvas already draws as its stock silhouette, just
+        // placed at a fixed angle in 3D instead of always facing the viewer. Correctly captures
+        // whatever's actually carved there (grooves, tapers, a bore) since it reads straight from
+        // OuterX/InnerX per Z sample, not an assumed/idealized shape.
+        private static MeshGeometry3D BuildCutFace(StockProfile stock, double angle)
+        {
+            var mesh = new MeshGeometry3D();
+            var cosA = Math.Cos(angle);
+            var sinA = Math.Sin(angle);
+
+            for (int i = 0; i < StockProfile.Resolution; i++)
+            {
+                var x1 = stock.SampleZ(i);
+                var x2 = stock.SampleZ(i + 1);
+                var outerR1 = stock.OuterX[i] / 2.0;
+                var innerR1 = stock.InnerX[i] / 2.0;
+                var outerR2 = stock.OuterX[i + 1] / 2.0;
+                var innerR2 = stock.InnerX[i + 1] / 2.0;
+
+                var p1 = new Point3D(x1, innerR1 * cosA, innerR1 * sinA);
+                var p2 = new Point3D(x1, outerR1 * cosA, outerR1 * sinA);
+                var p3 = new Point3D(x2, outerR2 * cosA, outerR2 * sinA);
+                var p4 = new Point3D(x2, innerR2 * cosA, innerR2 * sinA);
+                AddQuad(mesh, p1, p2, p3, p4);
             }
 
             return mesh;
@@ -274,7 +344,7 @@ namespace FanucSimulator
                 mesh.TriangleIndices.Add(b); mesh.TriangleIndices.Add(c); mesh.TriangleIndices.Add(d);
             }
             // Back end cap (a solid disk) - front end butts against the stock, left open.
-            var backCap = BuildEndCap(xBack, 0, bodyRadius * 2);
+            var backCap = BuildEndCap(xBack, 0, bodyRadius * 2, CircumferentialSegments, 2 * Math.PI);
             foreach (var p in backCap.Positions) mesh.Positions.Add(p);
             var offset = mesh.Positions.Count - backCap.Positions.Count;
             foreach (var idx in backCap.TriangleIndices) mesh.TriangleIndices.Add(idx + offset);
@@ -430,7 +500,14 @@ namespace FanucSimulator
 
             _azimuth -= dx * 0.008;
             _elevation = Math.Clamp(_elevation + dy * 0.008, -1.4, 1.4);
-            UpdateCameraPosition();
+
+            // Cutaway mode's cut angle tracks the camera (always faces the near side away), so it
+            // has to rebuild the mesh on every drag step to actually follow, not just reposition the
+            // camera - full-solid orbiting stays on the cheap camera-only path.
+            if (CutawayCheck.IsChecked == true)
+                Refresh();
+            else
+                UpdateCameraPosition();
         }
 
         private void Viewport_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
@@ -455,6 +532,8 @@ namespace FanucSimulator
         }
 
         private void Refresh_Click(object sender, RoutedEventArgs e) => Refresh();
+
+        private void Cutaway_Changed(object sender, RoutedEventArgs e) => Refresh();
 
         private void Close_Click(object sender, RoutedEventArgs e) => Close();
     }
