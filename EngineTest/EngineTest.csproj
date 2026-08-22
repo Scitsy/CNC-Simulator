@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Linked source, not a project reference - FanucSimulator builds as a WPF exe, and several
+         checks below exercise internals (private fields via the engine's own public API surface)
+         that only work when compiled into the same assembly as the test runner. -->
+    <Compile Include="..\GCodeParser.cs" Link="GCodeParser.cs" />
+    <Compile Include="..\ModalState.cs" Link="ModalState.cs" />
+    <Compile Include="..\OffsetTables.cs" Link="OffsetTables.cs" />
+    <Compile Include="..\ToolCatalog.cs" Link="ToolCatalog.cs" />
+    <Compile Include="..\StockProfile.cs" Link="StockProfile.cs" />
+    <Compile Include="..\Alarm.cs" Link="Alarm.cs" />
+    <Compile Include="..\LatheSimulator.cs" Link="LatheSimulator.cs" />
+    <Compile Include="..\LatheSimulator.CannedCycles.cs" Link="LatheSimulator.CannedCycles.cs" />
+    <Compile Include="..\LatheSimulator.Macro.cs" Link="LatheSimulator.Macro.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="Fixtures\*.gcode" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

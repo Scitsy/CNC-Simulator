@@ -8,4 +8,14 @@
     <LangVersion>latest</LangVersion>
   </PropertyGroup>
 
+  <!-- EngineTest is its own project (source-linked, not referenced) living in a subdirectory -
+       exclude it from this project's default SDK globs, or its Program.cs/obj/AssemblyInfo.cs
+       get swept into this build too, causing duplicate-Main/duplicate-attribute errors. -->
+  <ItemGroup>
+    <Compile Remove="EngineTest\**" />
+    <EmbeddedResource Remove="EngineTest\**" />
+    <None Remove="EngineTest\**" />
+    <Page Remove="EngineTest\**" />
+  </ItemGroup>
+
 </Project>
