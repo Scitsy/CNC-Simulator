@@ -817,6 +817,46 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
     Check("OD profile: concave fillet back to ~30mm at Z-50", Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -50)] - 30) < 0.5);
 }
 
+// 49. Custom tool catalog entries round-trip through SaveCustomEntries/LoadCustomEntries - the
+// persistence added for the Tool Builder's "add to tool catalog" checkbox. Uses a temp file and
+// restores ToolCatalog.Custom to empty afterward, since it's static/shared process-wide state.
+{
+    var builtInCountBefore = ToolCatalog.BuiltIn.Count;
+    var tempPath = Path.Combine(Path.GetTempPath(), $"fanuc_custom_tools_test_{Guid.NewGuid():N}.json");
+    ToolCatalog.Custom.Clear();
+    ToolCatalog.Custom.Add(new CatalogEntry
+    {
+        InsertDesignation = "TEST01", HolderDesignation = "TEST-HOLDER", Description = "Round-trip test entry",
+        Type = ToolType.Grooving, Insert = InsertShape.None, NoseRadius = 0.2, Width = 2.5, ShankSize = 20, Overhang = 60
+    });
+
+    try
+    {
+        ToolCatalog.SaveCustomEntries(tempPath);
+        ToolCatalog.Custom.Clear();
+        Console.WriteLine("[49] Custom tool catalog entries persist across save/load");
+        Check("Custom is empty right after Clear (sanity)", ToolCatalog.Custom.Count == 0);
+
+        ToolCatalog.LoadCustomEntries(tempPath);
+        Check("exactly one custom entry loaded back", ToolCatalog.Custom.Count == 1);
+        Check("field values round-tripped intact", ToolCatalog.Custom.Count == 1 &&
+            ToolCatalog.Custom[0].InsertDesignation == "TEST01" &&
+            ToolCatalog.Custom[0].Type == ToolType.Grooving &&
+            Math.Abs(ToolCatalog.Custom[0].Width - 2.5) < 0.001);
+        Check("Entries combines BuiltIn + Custom in that order",
+            ToolCatalog.Entries.Count == builtInCountBefore + 1 &&
+            ToolCatalog.Entries[builtInCountBefore].InsertDesignation == "TEST01");
+
+        ToolCatalog.LoadCustomEntries(Path.Combine(Path.GetTempPath(), $"fanuc_nonexistent_{Guid.NewGuid():N}.json"));
+        Check("loading a missing file leaves Custom untouched (still the 1 entry from above)", ToolCatalog.Custom.Count == 1);
+    }
+    finally
+    {
+        ToolCatalog.Custom.Clear(); // restore shared static state for any test that runs after this one
+        if (File.Exists(tempPath)) File.Delete(tempPath);
+    }
+}
+
 Console.WriteLine();
 Console.WriteLine($"===== TOTAL: {pass} passed, {fail} failed =====");
 Environment.Exit(fail == 0 ? 0 : 1);

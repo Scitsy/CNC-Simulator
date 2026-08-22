@@ -69,7 +69,7 @@
         <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,10,0,0">
             <TextBlock Text="Apply to Tool #:" VerticalAlignment="Center" Foreground="#6a8a9a" Margin="0,0,6,0"/>
             <ComboBox x:Name="ApplyToolNumberCombo" Width="50" VerticalAlignment="Center"/>
-            <CheckBox x:Name="AddToSessionCatalogCheck" Content="Also add to session catalog (not saved)"
+            <CheckBox x:Name="AddToSessionCatalogCheck" Content="Also add to tool catalog (saved)"
                       Foreground="#6a8a9a" VerticalAlignment="Center" Margin="16,0,0,0"/>
             <Button Content="Apply" Click="Apply_Click" Style="{StaticResource PanelButton}" Margin="16,0,0,0"/>
             <Button Content="Close" Click="Close_Click" Style="{StaticResource PanelButton}"/>

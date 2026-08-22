@@ -1,4 +1,9 @@
+using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace FanucSimulator
 {
@@ -46,7 +51,10 @@ namespace FanucSimulator
 
     public static class ToolCatalog
     {
-        public static readonly List<CatalogEntry> Entries = new()
+        // Hardcoded, ships with the app - fixed indices into this list are referenced by
+        // OffsetTables()'s constructor (default T1-T7 assignments), so entries must stay in this
+        // exact order and Custom entries below must only ever be appended after it, never mixed in.
+        public static readonly List<CatalogEntry> BuiltIn = new()
         {
             // ---- OD turning/facing (external, diamond inserts) ----
             new CatalogEntry
@@ -199,5 +207,57 @@ namespace FanucSimulator
                 Width = 20.0, ShankSize = 20.0, Overhang = 130
             },
         };
+
+        // Tools an operator has built and chosen to keep (Tool Builder's "add to catalog" checkbox)
+        // - loaded from/saved to disk, unlike BuiltIn above. Kept as a separate list rather than
+        // appending straight into BuiltIn so the fixed-index defaults above stay stable regardless
+        // of how many custom entries accumulate.
+        public static readonly List<CatalogEntry> Custom = new();
+
+        // Every reader (the OFFSET screen's catalog picker, fixed-index defaults in
+        // OffsetTables()'s constructor) sees one combined, indexable list; BuiltIn always comes
+        // first so nothing downstream needs to know the split exists. Rebuilt on every access - a
+        // small UI-scale list, not a hot path, so this trades a trivial allocation for not having to
+        // keep a cached copy in sync with two backing lists.
+        public static List<CatalogEntry> Entries => BuiltIn.Concat(Custom).ToList();
+
+        private static readonly JsonSerializerOptions JsonOptions = new()
+        {
+            WriteIndented = true,
+            Converters = { new JsonStringEnumConverter() }
+        };
+
+        // Custom catalog entries persist the same way tool/work offsets do (OffsetTables.SaveToFile)
+        // - silently, to a fixed file, no explicit operator save action.
+        public static void SaveCustomEntries(string path)
+        {
+            var dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir))
+                Directory.CreateDirectory(dir);
+            var json = JsonSerializer.Serialize(Custom, JsonOptions);
+            File.WriteAllText(path, json);
+        }
+
+        // Falls back to no custom entries on first run, a missing file, or a corrupt/unreadable one
+        // - persistence is a convenience, never a reason to fail to start.
+        public static void LoadCustomEntries(string path)
+        {
+            if (!File.Exists(path))
+                return;
+
+            try
+            {
+                var json = File.ReadAllText(path);
+                var entries = JsonSerializer.Deserialize<List<CatalogEntry>>(json, JsonOptions);
+                if (entries == null)
+                    return;
+                Custom.Clear();
+                Custom.AddRange(entries);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or ArgumentException or NullReferenceException)
+            {
+                // Leave Custom as-is (empty on a fresh run) rather than fail to start.
+            }
+        }
     }
 }

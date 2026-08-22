@@ -117,7 +117,7 @@ namespace FanucSimulator
             _offsets.GetOrCreateTool(toolNumber).AssignFromCatalog(entry);
 
             if (AddToSessionCatalogCheck.IsChecked == true)
-                ToolCatalog.Entries.Add(entry);
+                ToolCatalog.Custom.Add(entry);
 
             ToolApplied?.Invoke();
 

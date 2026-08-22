@@ -33,6 +33,8 @@ namespace FanucSimulator
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FanucSimulator", "recent.txt");
         private static readonly string OffsetsPath = IOPath.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FanucSimulator", "tool_offsets.json");
+        private static readonly string CustomCatalogPath = IOPath.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FanucSimulator", "custom_tools.json");
         // "CF/USB" removable-media equivalent - a fixed folder the user keeps program files in,
         // rather than wherever Windows last happened to browse to.
         private static readonly string NCFilesPath = @"C:\Building Programs\fanuc-simple\NCFiles";
@@ -102,6 +104,7 @@ namespace FanucSimulator
         public MainWindow()
         {
             InitializeComponent();
+            ToolCatalog.LoadCustomEntries(CustomCatalogPath);
             Directory.CreateDirectory(NCFilesPath);
             PopulateHelpScreen();
             BuildDualKeyGrid();
@@ -996,6 +999,7 @@ namespace FanucSimulator
                     RefreshOffsetGrids();
                     RenderLathe();
                     SaveOffsets();
+                    ToolCatalog.SaveCustomEntries(CustomCatalogPath);
                 };
             }
             _toolBuilderWindow.Show();
