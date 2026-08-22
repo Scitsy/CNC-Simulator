@@ -40,10 +40,13 @@ runs real conditionals and loops, not just token substitution.
   instantly.
 - **A 3D view**: the same carved stock revolved into a shaded 3D solid alongside a 3-jaw chuck
   stand-in, the current tool position, and the toolpath itself (color-coded rapid/feed, matching the
-  2D canvas) - its own window with mouse-drag orbit and scroll-to-zoom, a first pass, not a full
-  machine model (see Scope below).
+  2D canvas) - its own window with mouse-drag orbit, scroll-to-zoom, and a cutaway mode that always
+  cuts away whichever side currently faces the camera, so internal bores/grooves are visible from
+  any angle. A first pass, not a full machine model (see Scope below).
 
-![3D view](docs/screenshots/stock_3d_view.png)
+| | |
+|---|---|
+| ![3D view](docs/screenshots/stock_3d_view.png) | ![3D cutaway view](docs/screenshots/stock_3d_cutaway.png) |
 
 ## Screenshots
 
@@ -114,8 +117,8 @@ This models a 2-axis turning center closely enough to be useful for learning and
 not a certified twin of any real control. Not currently modeled: Custom Macro B indirect addressing
 (`#[expr]`) and multiple statements per block, and general system variables beyond the three listed
 above. The 3D view is a first pass: the chuck is a simplified 3-jaw stand-in (flat wedge jaws, not
-manufacturer-accurate geometry), there's no cutaway/cross-section view, and a through-bore right at
-the face isn't specially mitered against the end cap.
+manufacturer-accurate geometry), the cutaway view only ever cuts the workpiece (not the chuck), and
+a through-bore right at the face isn't specially mitered against the end cap.
 
 ## License
 
