@@ -649,10 +649,20 @@ namespace FanucSimulator
             var compActive = Modal.Comp != CutterComp.Off && offset.NoseRadius != 0 && hasDirection;
             var (compDx, compDz) = compActive ? ComputeCompOffset(ndx, ndz, offset.NoseRadius, Modal.Comp) : (0, 0);
 
-            var fromRenderX = X + offset.TotalX + compDx;
-            var fromRenderZ = Z + offset.TotalZ + compDz;
-            var toRenderX = targetX + offset.TotalX + compDx;
-            var toRenderZ = targetZ + offset.TotalZ + compDz;
+            // X/Z (and the target passed in) are work coordinates in the currently active work
+            // offset's frame - the stock itself sits at a fixed machine-space location, so the
+            // render/carve/collision position needs the active work offset folded in too, exactly
+            // like the tool's own geometry+wear offset just below. Without this, switching G54/G55/
+            // etc with different stored X/Z would carve at the wrong physical location (invisible
+            // until now since every work offset defaults to X0 Z0, a no-op either way).
+            var workOffset = Offsets.WorkOffsets.TryGetValue(Modal.ActiveWorkOffset, out var wo) ? wo : null;
+            var workOffsetX = workOffset?.X ?? 0;
+            var workOffsetZ = workOffset?.Z ?? 0;
+
+            var fromRenderX = X + offset.TotalX + compDx + workOffsetX;
+            var fromRenderZ = Z + offset.TotalZ + compDz + workOffsetZ;
+            var toRenderX = targetX + offset.TotalX + compDx + workOffsetX;
+            var toRenderZ = targetZ + offset.TotalZ + compDz + workOffsetZ;
 
             // Miter this segment's corner against the previous comp-active segment by intersecting
             // their offset lines, instead of leaving each segment's independently-offset endpoints

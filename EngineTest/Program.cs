@@ -570,5 +570,140 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
     Check("thread section still cut near Z-60 (OD reduced below the 24mm turned diameter)", sim.Stock.OuterX[NearestIndex(sim.Stock, -60)] < 24 - 0.5);
 }
 
+// ---- New: full G/M-code functionality audit (codes with real behavioral consequence but zero
+// prior test coverage - found by cross-referencing GCodeReference.cs's documented set against
+// every .nc/.gcode fixture and inline test program) ----
+
+// 34. G91 incremental positioning: relative moves must accumulate from the current position, not
+// jump to absolute coordinates.
+{
+    var sim = new LatheSimulator();
+    var program = "G21\nT0101\nG00 X10 Z0\nG91\nG01 X5 Z-3 F0.1\nG01 X5 Z-3 F0.1\nM30\n";
+    var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
+    Console.WriteLine("[34] G91 incremental positioning accumulates from current position");
+    Check("no alarms", alarms.Count == 0);
+    Check("X accumulated 10+5+5=20", Math.Abs(sim.X - 20) < 0.01);
+    Check("Z accumulated 0-3-3=-6", Math.Abs(sim.Z - (-6)) < 0.01);
+}
+
+// 35. G41/G42/G40 cutter nose radius compensation: a substantial real feature (perpendicular-to-
+// travel offset + corner mitering, LatheSimulator.cs MoveTo) that had zero test coverage anywhere.
+// T1 (CNMG120404) has NoseRadius 0.4mm.
+{
+    var sim = new LatheSimulator();
+    var program =
+        "G21\nT0101\nG00 X50 Z2\nG41\nG01 X30 Z2 F0.1\nG01 Z-10 F0.1\nG40\nG01 Z-11 F0.1\nG01 Z-20 F0.1\nM30\n";
+    var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
+    Console.WriteLine("[35] G41/G42/G40 cutter nose radius compensation");
+    Check("no alarms", alarms.Count == 0);
+    Check("G41-active section (Z-5) offset OUTWARD by the 0.4mm nose radius: ~X30.4",
+        Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -5)] - 30.4) < 0.05);
+    Check("G40-cancelled section (Z-15) back to the exact programmed X30 (uncompensated)",
+        Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -15)] - 30.0) < 0.05);
+
+    // G42 mirrors G41 - same magnitude, opposite direction.
+    var sim2 = new LatheSimulator();
+    var program2 = "G21\nT0101\nG00 X50 Z2\nG42\nG01 X30 Z2 F0.1\nG01 Z-10 F0.1\nM30\n";
+    RunFull(sim2, new GCodeParser().Parse(program2), out _);
+    Check("G42 offset INWARD by the same 0.4mm nose radius: ~X29.6",
+        Math.Abs(sim2.Stock.OuterX[NearestIndex(sim2.Stock, -5)] - 29.6) < 0.05);
+}
+
+// 36. Work offset G54-G59: Modal.ActiveWorkOffset was tracked but never actually consulted when
+// carving/rendering - a real bug (invisible until now since every work offset defaults to X0/Z0,
+// a no-op either way). Fixed in LatheSimulator.cs MoveTo to fold the active work offset in
+// alongside the tool's own geometry+wear offset, exactly the same established pattern.
+{
+    var sim = new LatheSimulator(); // default stock: 76.2mm dia x 100mm length
+    sim.Offsets.WorkOffsets[55].Z = 10; // G55 origin sits 10mm toward +Z relative to G54
+    var program = "G21\nT0101\nG55\nG00 X50 Z-20\nG01 X30 Z-20 F0.1\nM30\n";
+    var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
+    Console.WriteLine("[36] G54-G59 work offset actually shifts the physical carve location");
+    Check("no alarms", alarms.Count == 0);
+    Check("carved at MACHINE Z-10 (programmed Z-20 + G55's +10 offset): ~X30",
+        Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -10)] - 30) < 0.5);
+    Check("nothing carved at the programmed Z-20 itself (still raw ~76.2mm)",
+        Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -20)] - 76.2) < 0.5);
+}
+
+// 37. G04 dwell: must not crash, misinterpret its P/X value as an axis move, or block subsequent
+// motion - both the millisecond (P) and second (X) forms.
+{
+    var sim = new LatheSimulator();
+    var program = "G21\nT0101\nG00 X50 Z2\nG04 P500\nG04 X0.5\nG00 X30 Z-5\nM30\n";
+    var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
+    Console.WriteLine("[37] G04 dwell (P and X forms) doesn't crash or interfere with motion");
+    Check("no alarms", alarms.Count == 0);
+    Check("subsequent motion unaffected, final X30 Z-5", Math.Abs(sim.X - 30) < 0.01 && Math.Abs(sim.Z - (-5)) < 0.01);
+}
+
+// 38. G28 return to reference position: rapids to work X0/Z0. Bores first so the destination is
+// genuinely hollow (a solid bar's centerline is never actually reachable without cutting through
+// material first, on a real machine or this one) for a clean, warning-free demonstration.
+{
+    var sim = new LatheSimulator();
+    var program =
+        "G21\nT0303\nG00 X6 Z2\nG01 X20 Z0 F0.1\nG01 Z-30 F0.1\nG00 X6 Z2\nG00 X50 Z50\nG28\nM30\n";
+    var alarms = RunFull(sim, new GCodeParser().Parse(program), out var warnings);
+    Console.WriteLine("[38] G28 return to reference (work X0/Z0)");
+    Check("no alarms", alarms.Count == 0);
+    Check("no collision warnings (X0 at Z0 is within the just-bored Ø20mm hollow)", warnings.Count == 0);
+    Check("final position is X0 Z0", Math.Abs(sim.X) < 0.01 && Math.Abs(sim.Z) < 0.01);
+}
+
+// 39. G97 constant RPM holds the programmed speed fixed as diameter changes - contrasted with G96
+// constant surface speed, which must recompute RPM as X changes.
+{
+    var sim = new LatheSimulator();
+    var program = "G21\nT0101\nG97 S500\nG00 X50 Z2\nG01 X30 Z-10 F0.1\nM30\n";
+    RunFull(sim, new GCodeParser().Parse(program), out _);
+    Console.WriteLine("[39] G97 constant RPM vs G96 constant surface speed");
+    Check("G97: RPM stays exactly at the programmed 500 despite the diameter change", Math.Abs(sim.SpindleSpeed - 500) < 0.01);
+
+    var sim2 = new LatheSimulator();
+    var program2 = "G21\nT0101\nG96 S150\nG00 X100 Z2\nM03\nG01 X50 Z-5 F0.1\nM30\n";
+    RunFull(sim2, new GCodeParser().Parse(program2), out _);
+    var expectedRpmAtX50 = 150 * 1000 / (Math.PI * 50);
+    Check($"G96: RPM recomputed for the smaller X50 diameter (expect ~{expectedRpmAtX50:F0})",
+        Math.Abs(sim2.SpindleSpeed - expectedRpmAtX50) < 1.0);
+}
+
+// 40. G20 inch mode: X/Z/F values must be converted to mm internally.
+{
+    var sim = new LatheSimulator();
+    var program = "G20\nT0101\nG00 X2 Z2\nG01 X1 Z-1 F0.1\nM30\n";
+    var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
+    Console.WriteLine("[40] G20 inch mode converts X/Z to mm");
+    Check("no alarms", alarms.Count == 0);
+    Check("X1 inch -> 25.4mm", Math.Abs(sim.X - 25.4) < 0.01);
+    Check("Z-1 inch -> -25.4mm", Math.Abs(sim.Z - (-25.4)) < 0.01);
+}
+
+// 41. M01 (optional stop, documented as "not modeled - always continues") and M02 (documented as
+// "not separately simulated, see M30") - both intentionally near-inert, confirm they're actually
+// harmless (no crash, no alarm, no unexpected pause/stop) rather than untested-and-hoping.
+{
+    var sim = new LatheSimulator();
+    var program = "G21\nT0101\nM01\nG00 X50 Z2\nG01 X30 Z-10 F0.1\nM02\nM30\n";
+    var result = sim.RunProgram(new GCodeParser().Parse(program));
+    Console.WriteLine("[41] M01 optional stop / M02 alternate program end - both intentionally inert");
+    Check("no alarms", sim.Alarms.Count == 0);
+    Check("M01 did not pause execution (optional-stop switch not modeled)", !result.Paused || result.ProgramEnded);
+    Check("program still reaches M30 and ends normally", result.ProgramEnded);
+    Check("motion around M01/M02 executed normally, final X30 Z-10", Math.Abs(sim.X - 30) < 0.01 && Math.Abs(sim.Z - (-10)) < 0.01);
+}
+
+// 42. M06 tool change confirmation - a real T-word already selects the tool by itself (established
+// FANUC lathe convention); M06 alongside it should be harmless and not double-apply or conflict.
+{
+    var sim = new LatheSimulator();
+    var program = "G21\nT0101\nM06\nG00 X50 Z2\nG01 X30 Z-10 F0.1\nM30\n";
+    var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
+    Console.WriteLine("[42] M06 tool change confirmation alongside a T-word");
+    Check("no alarms", alarms.Count == 0);
+    Check("tool 1 correctly active", sim.CurrentTool == 1);
+    Check("motion proceeds normally, final X30 Z-10", Math.Abs(sim.X - 30) < 0.01 && Math.Abs(sim.Z - (-10)) < 0.01);
+}
+
 Console.WriteLine();
 Console.WriteLine($"===== TOTAL: {pass} passed, {fail} failed =====");
