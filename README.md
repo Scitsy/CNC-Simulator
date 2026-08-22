@@ -1,5 +1,7 @@
 # FANUC 0i-TF Plus Lathe Simulator
 
+[![CI](https://github.com/Scitsy/CNC-Simulator/actions/workflows/ci.yml/badge.svg)](https://github.com/Scitsy/CNC-Simulator/actions/workflows/ci.yml)
+
 A CNC lathe simulator modeled on a real FANUC 0i-TF Plus control: a full G-code parser and
 machining engine, a carved (not just drawn) stock model, and a WPF UI that mirrors the actual
 control's screens (POS / PROGRAM / OFFSET / ALARM / MACRO / HELP), softkey navigation, and MDI
