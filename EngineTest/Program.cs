@@ -646,18 +646,18 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
     Check("subsequent motion unaffected, final X30 Z-5", Math.Abs(sim.X - 30) < 0.01 && Math.Abs(sim.Z - (-5)) < 0.01);
 }
 
-// 38. G28 return to reference position: rapids to work X0/Z0. Bores first so the destination is
-// genuinely hollow (a solid bar's centerline is never actually reachable without cutting through
-// material first, on a real machine or this one) for a clean, warning-free demonstration.
+// 38. G28 parks the turret at the reference position, which is clear of the work at the positive
+// extreme of both axes - NOT at work X0 Z0, which on a lathe is the spindle centreline at the face
+// and would drive the turret straight through the part.
 {
     var sim = new LatheSimulator();
-    var program =
-        "G21\nT0303\nG00 X6 Z2\nG01 X20 Z0 F0.1\nG01 Z-30 F0.1\nG00 X6 Z2\nG00 X50 Z50\nG28\nM30\n";
+    var program = "G21\nT0101\nG00 X76.2 Z2\nG01 X60 Z-10 F0.2\nG00 X76.2 Z2\nG28\nM30\n";
     var alarms = RunFull(sim, new GCodeParser().Parse(program), out var warnings);
-    Console.WriteLine("[38] G28 return to reference (work X0/Z0)");
+    Console.WriteLine("[38] G28 parks at the reference position, clear of the work");
     Check("no alarms", alarms.Count == 0);
-    Check("no collision warnings (X0 at Z0 is within the just-bored Ø20mm hollow)", warnings.Count == 0);
-    Check("final position is X0 Z0", Math.Abs(sim.X) < 0.01 && Math.Abs(sim.Z) < 0.01);
+    Check("retracting to reference over solid stock raises no collision warning", warnings.Count == 0);
+    Check("final position is the reference position",
+        Math.Abs(sim.X - LatheSimulator.ReferenceX) < 0.01 && Math.Abs(sim.Z - LatheSimulator.ReferenceZ) < 0.01);
 }
 
 // 39. G97 constant RPM holds the programmed speed fixed as diameter changes - contrasted with G96
@@ -1066,15 +1066,73 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
 // to the reference position.
 {
     var sim = new LatheSimulator();
-    // Bore first so the centreline is reachable without ploughing through solid stock.
-    var program = "G21\nT0303\nG0 X10 Z2\nG1 X20 Z2 F0.1\nG1 Z-30 F0.1\nG0 X10 Z2\nG28 X40 Z5\nM30\n";
+    var program = "G21\nT0101\nG0 X76.2 Z2\nG1 X60 Z-10 F0.2\nG28 X40 Z5\nM30\n";
     var alarms = RunFull(sim, new GCodeParser().Parse(program), out var warnings);
     Console.WriteLine("[64] G28 routes via its intermediate point");
     Check("no alarms", alarms.Count == 0);
-    Check("ends at the reference position X0 Z0", Math.Abs(sim.X) < 0.01 && Math.Abs(sim.Z) < 0.01);
+    Check("ends at the reference position",
+        Math.Abs(sim.X - LatheSimulator.ReferenceX) < 0.01 && Math.Abs(sim.Z - LatheSimulator.ReferenceZ) < 0.01);
     // The intermediate point should appear in the toolpath before the final home move.
     var viaIndex = sim.ToolPath.FindIndex(p => Math.Abs(p.X - 40) < 0.01 && Math.Abs(p.Z - 5) < 0.01);
     Check("the intermediate point X40 Z5 was actually visited", viaIndex >= 0);
+}
+
+// ---- Inch as the power-on default, and unit conversion of the F word ----
+
+// 65. The control powers on in inch, like the reference machine, so coordinates in a program that
+// never declares units are inches.
+{
+    var sim = new LatheSimulator();
+    Console.WriteLine("[65] Power-on default is inch");
+    Check("Modal.Units defaults to Inch", sim.Modal.Units == UnitsMode.Inch);
+
+    var alarms = RunFull(sim, new GCodeParser().Parse("T0101\nG00 X2 Z1\nM30\n"), out _);
+    Check("no alarms", alarms.Count == 0);
+    Check("X2 inch is held internally as 50.8mm", Math.Abs(sim.X - 50.8) < 0.001);
+    Check("Z1 inch is held internally as 25.4mm", Math.Abs(sim.Z - 25.4) < 0.001);
+}
+
+// 66. The F word is a dimension and has to convert like one. This was the latent bug: FeedRate was
+// assigned raw, so an inch-mode F0.01 became 0.01mm/rev internally instead of 0.254mm/rev - a 25x
+// feed error that only stayed invisible while metric was the default.
+{
+    var sim = new LatheSimulator();
+    RunFull(sim, new GCodeParser().Parse("G20\nT0101\nM03 S500\nG01 Z-1 F0.01\nM30\n"), out _);
+    Console.WriteLine("[66] An inch-mode F word converts to mm internally");
+    Check("F0.01 in/rev is held as 0.254 mm/rev", Math.Abs(sim.FeedRate - 0.254) < 1e-6);
+
+    var sim2 = new LatheSimulator();
+    RunFull(sim2, new GCodeParser().Parse("G21\nT0101\nM03 S500\nG01 Z-10 F0.25\nM30\n"), out _);
+    Check("a metric F word is unchanged", Math.Abs(sim2.FeedRate - 0.25) < 1e-6);
+}
+
+// 67. Cycle time must come out right in inch too - the same closed-form check as the metric cases,
+// which is what makes the F conversion above verifiable end to end rather than just internally.
+{
+    var sim = new LatheSimulator();
+    // G98 inch: 2 inch of travel at 4 in/min = 30s.
+    var alarms = RunFull(sim, new GCodeParser().Parse("G20\nG98\nT0101\nG01 Z-2 F4\nM30\n"), out _);
+    Console.WriteLine("[67] Cycle time is correct in inch mode");
+    Check("no alarms", alarms.Count == 0);
+    Check("30s for 2in at 4in/min", Math.Abs(sim.SimulatedSecondsElapsed - 30.0) < 0.001);
+}
+
+// 68. G96 constant surface speed in inch mode. S is surface FEET per minute in inch and m/min in
+// metric, so the two modes need different constants against the mm diameter held internally -
+// using the metric one in inch overstated spindle speed by 3.28x.
+{
+    var sim = new LatheSimulator();
+    // 400 SFM at 2.0 inch diameter -> 400 * 12 / (pi * 2.0) = 763.94 rpm.
+    RunFull(sim, new GCodeParser().Parse("G20\nT0101\nG00 X2 Z0.1\nG96 S400\nM03\nM30\n"), out _);
+    var expectedInch = 400.0 * 12.0 / (Math.PI * 2.0);
+    Console.WriteLine("[68] G96 surface speed uses SFM in inch mode");
+    Check($"~{expectedInch:F0} rpm at 2in dia from S400 SFM", Math.Abs(sim.SpindleSpeed - expectedInch) < 1.0);
+
+    var sim2 = new LatheSimulator();
+    // 150 m/min at 50mm diameter -> 150 * 1000 / (pi * 50) = 954.9 rpm, unchanged behaviour.
+    RunFull(sim2, new GCodeParser().Parse("G21\nT0101\nG00 X50 Z2\nG96 S150\nM03\nM30\n"), out _);
+    var expectedMetric = 150.0 * 1000.0 / (Math.PI * 50.0);
+    Check($"~{expectedMetric:F0} rpm at 50mm dia from S150 m/min", Math.Abs(sim2.SpindleSpeed - expectedMetric) < 1.0);
 }
 
 Console.WriteLine();

@@ -13,10 +13,15 @@ runs real conditionals and loops, not just token substitution.
 
 ## What it simulates
 
-- **Motion**: G00/G01/G02/G03 with real linear/arc interpolation, G90/G91 absolute/incremental,
-  G20/G21 inch/metric, G96/G97 constant surface speed vs. constant RPM.
-- **Canned cycles**: G70 finishing, G71/G72 rough turning/facing, G74 peck drilling, G75 grooving
-  (external and internal/ID), G76 threading (multi-pass, equal cutting area, spring passes).
+- **FANUC G-code system A**, the lathe default — absolute vs incremental is per-address (`X`/`Z` vs
+  `U`/`W`), not a G90/G91 modal pair, and the control powers on in inch like the machine it's
+  modelled on. Codes it doesn't support raise an alarm rather than being silently ignored.
+- **Motion**: G00/G01/G02/G03 with real linear/arc interpolation, G20/G21 inch/metric, G96/G97
+  constant surface speed vs. constant RPM (correct SFM and m/min formulae), G28 reference return.
+- **Canned cycles**: the single cycles G90 OD/ID turning, G92 threading and G94 facing (modal, with
+  taper), plus the multiple repetitive cycles G70 finishing, G71/G72 rough turning/facing, G74 peck
+  drilling, G75 grooving (external and internal/ID), G76 threading (multi-pass, equal cutting area,
+  spring passes), G32/G33 single-block threading, and G80 to cancel.
 - **Cutter nose radius compensation**: G41/G42/G40 - a true perpendicular-to-travel offset with
   corner mitering, not a cosmetic flag.
 - **Work and tool offsets**: G54-G59 work coordinate systems, a full tool offset table (geometry +
@@ -76,6 +81,9 @@ Or open `FanucSimulator.sln` in Visual Studio / Rider and run the `FanucSimulato
 `NCFiles/` has over a dozen example programs, loadable from the PROGRAM screen's `Load...` button.
 A few worth starting with:
 
+- **`O0014_inch_turning_demo.nc`** - the closest to real shop work: inch throughout, faced with the
+  `G94` cycle, roughed with a modal `G90` (bare `X` blocks taking successive passes), finished using
+  `U`/`W` incremental addressing, and grooved with `G75`. Runs on the default 3.0 x 4.0 in stock.
 - **`O0011_modal_macro_demo.nc`** - the best showcase of the macro engine: `G66`/`G67` arm and
   cancel a modal macro call that auto-fires before each positioning move, cutting three witness
   grooves without a `G65` on every line. Set stock to 30mm OD x 50mm length before running.
@@ -90,7 +98,7 @@ A few worth starting with:
 ## Testing
 
 `EngineTest/` is a headless console harness (source-linked against the same engine files, no test
-framework dependency) with 188 hand-rolled assertions covering every documented G/M-code, both
+framework dependency) with 228 hand-rolled assertions covering every documented G/M-code, both
 canned-cycle directions, macro control flow, geometry checks against several of the demo programs
 above, the catalog-persistence round-trip, and exact closed-form cycle-time checks. Runs
 automatically on every push via GitHub Actions (see the badge at the top of this file).

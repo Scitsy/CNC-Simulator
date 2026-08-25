@@ -11,6 +11,10 @@ namespace FanucSimulator
         private double _groovingRetract = 0.5;
         private double _drillingRetract = 0.5;
 
+        private int _threadFinishPasses = 1;
+        private double _threadTipAngle = 60;
+        private double _threadMinDepthOfCut = 0.02;
+
         // A system-A single cycle (G90/G92/G94) keeps its own coordinates modal: once armed, a block
         // giving only a new X repeats the cycle at that depth with the previously commanded Z and
         // taper. Without this the repeat block would take Z from the current position - which, since
@@ -25,9 +29,6 @@ namespace FanucSimulator
             _cycleModalZ = null;
             _cycleModalTaper = 0;
         }
-        private int _threadFinishPasses = 1;
-        private double _threadTipAngle = 60;
-        private double _threadMinDepthOfCut = 0.02;
 
         private static bool IsRoughingSetup(GCodeParser.Block block) =>
             block.Commands.Any(c => c.Type == 'G' && (c.Code == 71 || c.Code == 72)) && !block.Params.ContainsKey("P");
@@ -38,7 +39,7 @@ namespace FanucSimulator
         private void StoreGroovingSetup(GCodeParser.Block block)
         {
             _groovingRetract = block.Params.TryGetValue("R", out var r) ? Math.Abs(ToMm(r)) : 0.5;
-            Messages.Add($"G75: Grooving cycle setup, retract {_groovingRetract:F2}mm");
+            Messages.Add($"G75: Grooving cycle setup, retract {Len(_groovingRetract)}{LenUnit}");
         }
 
         private static bool IsDrillingSetup(GCodeParser.Block block) =>
@@ -47,7 +48,7 @@ namespace FanucSimulator
         private void StoreDrillingSetup(GCodeParser.Block block)
         {
             _drillingRetract = block.Params.TryGetValue("R", out var r) ? Math.Abs(ToMm(r)) : 0.5;
-            Messages.Add($"G74: Peck drilling cycle setup, retract {_drillingRetract:F2}mm");
+            Messages.Add($"G74: Peck drilling cycle setup, retract {Len(_drillingRetract)}{LenUnit}");
         }
 
         private static bool IsThreadingSetup(GCodeParser.Block block) =>
@@ -69,7 +70,7 @@ namespace FanucSimulator
             if (block.Params.TryGetValue("Q", out var qRaw))
                 _threadMinDepthOfCut = Math.Max(0.005, Math.Abs(qRaw) / 1000.0);
 
-            Messages.Add($"G76: Threading cycle setup, {_threadFinishPasses} finish pass(es), {_threadTipAngle:F0}deg tip, min depth {_threadMinDepthOfCut:F3}mm");
+            Messages.Add($"G76: Threading cycle setup, {_threadFinishPasses} finish pass(es), {_threadTipAngle:F0}deg tip, min depth {Len(_threadMinDepthOfCut)}{LenUnit}");
         }
 
         private static bool IsCannedCycleTrigger(GCodeParser.Block block, out int code)
@@ -106,7 +107,7 @@ namespace FanucSimulator
             _roughingRetract = block.Params.TryGetValue("R", out var retract) ? Math.Abs(ToMm(retract)) : 0.5;
 
             var code = block.Commands.First(c => c.Type == 'G' && (c.Code == 71 || c.Code == 72)).Code;
-            Messages.Add($"G{code}: Roughing cycle setup, depth {_roughingDepth:F2}mm/pass, retract {_roughingRetract:F2}mm");
+            Messages.Add($"G{code}: Roughing cycle setup, depth {Len(_roughingDepth)}{LenUnit}/pass, retract {Len(_roughingRetract)}{LenUnit}");
         }
 
         private void ExecuteCannedCycleTrigger(int code, GCodeParser.Block block, List<GCodeParser.Block> blocks)
@@ -181,7 +182,7 @@ namespace FanucSimulator
                 return;
 
             if (block.Params.TryGetValue("Feed", out var feed))
-                FeedRate = feed;
+                SetFeedRate(feed);
 
             if (block.Params.TryGetValue("R", out var rVal))
                 _cycleModalTaper = ToMm(rVal);
@@ -207,9 +208,8 @@ namespace FanucSimulator
                 if (!TryMoveTo(startX, startZ, rapid: true)) return;
             }
 
-            var feedLabel = Modal.Feed == FeedMode.PerRevolution ? "mm/rev" : "mm/min";
             var taperNote = Math.Abs(taper) > 1e-9 ? $", taper R{taper:F3}" : "";
-            Messages.Add($"G{code}: {cycleName} cycle to X{targetX:F3} Z{targetZ:F3}{taperNote} @ {FeedRate:F3}{feedLabel}");
+            Messages.Add($"G{code}: {cycleName} cycle to X{Len(targetX)} Z{Len(targetZ)}{taperNote} @ {Len(FeedRate)} {FeedUnit}");
         }
 
         // Single-block threading: one constant-lead pass along the commanded vector, with no cycle
@@ -230,12 +230,12 @@ namespace FanucSimulator
             // F on a threading block is the lead (distance per spindle revolution), not a feed rate,
             // so the move is inherently per-revolution regardless of the active G98/G99.
             if (block.Params.TryGetValue("Feed", out var lead))
-                FeedRate = lead;
+                SetFeedRate(lead);
 
             if (!TryMoveTo(targetX, targetZ, rapid: false))
                 return;
 
-            Messages.Add($"G32: Thread cut to X{targetX:F3} Z{targetZ:F3} @ lead {FeedRate:F4}");
+            Messages.Add($"G32: Thread cut to X{Len(targetX)} Z{Len(targetZ)} @ lead {Len(FeedRate)}{LenUnit}");
         }
 
         private void ExecuteThreadingCycle(GCodeParser.Block block)
@@ -266,9 +266,9 @@ namespace FanucSimulator
             var startZ = Z;
             var depths = BuildThreadDepthSchedule(threadHeight, firstCutDepth, _threadMinDepthOfCut, _threadFinishPasses);
 
-            Messages.Add($"G76: Threading cycle, {depths.Count} pass(es), thread height {threadHeight:F3}mm, lead {lead:F3}mm/rev");
+            Messages.Add($"G76: Threading cycle, {depths.Count} pass(es), thread height {Len(threadHeight)}{LenUnit}, lead {Len(lead)}{LenUnit}/rev");
 
-            FeedRate = lead;
+            SetFeedRate(lead);
             for (int p = 0; p < depths.Count; p++)
             {
                 var depth = depths[p];
@@ -291,7 +291,7 @@ namespace FanucSimulator
                 if (!TryMoveTo(startX, targetZ, rapid: true))
                     return;
 
-                Messages.Add($"  Pass {p + 1}/{depths.Count}: depth {depth:F3}mm");
+                Messages.Add($"  Pass {p + 1}/{depths.Count}: depth {Len(depth)}{LenUnit}");
             }
 
             if (!TryMoveTo(startX, startZ, rapid: true))
@@ -361,9 +361,9 @@ namespace FanucSimulator
 
             var startZ = Z;
             var xPositions = BuildGroovePlunges(X, targetX, stepX);
-            Messages.Add($"G74: Peck drilling cycle, {xPositions.Count} X position(s), peck {peckZ:F3}mm");
+            Messages.Add($"G74: Peck drilling cycle, {xPositions.Count} X position(s), peck {Len(peckZ)}{LenUnit}");
 
-            FeedRate = feed;
+            SetFeedRate(feed);
             var dir = Math.Sign(targetZ - startZ);
             foreach (var x in xPositions)
             {
@@ -390,7 +390,7 @@ namespace FanucSimulator
                     return;
             }
 
-            Messages.Add($"G74: Peck drilling complete, retracted to Z{startZ:F2}");
+            Messages.Add($"G74: Peck drilling complete, retracted to Z{Len(startZ)}");
         }
 
         private void ExecuteGroovingCycle(GCodeParser.Block block)
@@ -419,9 +419,9 @@ namespace FanucSimulator
 
             var startX = X;
             var zPositions = BuildGroovePlunges(Z, targetZ, stepZ);
-            Messages.Add($"G75: Grooving cycle, {zPositions.Count} plunge position(s), peck {peckX:F3}mm");
+            Messages.Add($"G75: Grooving cycle, {zPositions.Count} plunge position(s), peck {Len(peckX)}{LenUnit}");
 
-            FeedRate = feed;
+            SetFeedRate(feed);
             foreach (var z in zPositions)
             {
                 if (!TryMoveTo(startX, z, rapid: true))
@@ -457,7 +457,7 @@ namespace FanucSimulator
                     return;
             }
 
-            Messages.Add($"G75: Grooving complete, retracted to X{startX:F2}");
+            Messages.Add($"G75: Grooving complete, retracted to X{Len(startX)}");
         }
 
         // Wide grooves (Q > 0) get pecked at a sequence of Z positions stepping toward targetZ;
@@ -553,7 +553,7 @@ namespace FanucSimulator
                 return;
 
             if (block.Params.TryGetValue("Feed", out var feed))
-                FeedRate = feed;
+                SetFeedRate(feed);
 
             Messages.Add($"G70: Finishing pass, {contour.Count} points");
 
@@ -563,7 +563,7 @@ namespace FanucSimulator
                     return;
             }
 
-            Messages.Add($"G70: Finish complete X{X:F2} Z{Z:F2}");
+            Messages.Add($"G70: Finish complete X{Len(X)} Z{Len(Z)}");
         }
 
         private void ExecuteRoughingCycle(bool isFacing, GCodeParser.Block block, List<GCodeParser.Block> blocks)
@@ -594,7 +594,7 @@ namespace FanucSimulator
             var offsetContour = contour.Select(p => (X: p.X + du, Z: p.Z + dw)).ToList();
 
             var code = isFacing ? 72 : 71;
-            Messages.Add($"G{code}: Roughing cycle, {offsetContour.Count} contour points, allowance U{du:F2} W{dw:F2}");
+            Messages.Add($"G{code}: Roughing cycle, {offsetContour.Count} contour points, allowance U{Len(du)} W{Len(dw)}");
 
             RunRoughingPasses(offsetContour, roughFeed, isFacing, code);
         }
@@ -682,7 +682,7 @@ namespace FanucSimulator
                 if (!TryMoveTo(approachX, approachZ, rapid: true))
                     return;
 
-                FeedRate = feed;
+                SetFeedRate(feed);
                 foreach (var (primary, secondary) in path)
                 {
                     var (px, pz) = FromGeneric(primary, secondary);
@@ -691,7 +691,7 @@ namespace FanucSimulator
                 }
 
                 currentSecondary = path[^1].Secondary;
-                Messages.Add($"  Pass {pass}/{passCount}: depth {passPrimary:F2}mm");
+                Messages.Add($"  Pass {pass}/{passCount}: depth {Len(passPrimary)}{LenUnit}");
             }
 
             // Return to the exact original diameter (matching pre-fix behavior, so G70 finishing

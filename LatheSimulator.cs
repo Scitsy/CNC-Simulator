@@ -19,7 +19,7 @@ namespace FanucSimulator
         public double Z { get; set; } = 0;
         public double SpindleSpeed { get; set; } = 0;
         public int SpindleDir { get; set; } = 0; // 0=off, 1=fwd, -1=rev
-        public double FeedRate { get; set; } = 100;
+        public double FeedRate { get; set; } = 0;   // no feed commanded yet, like a real control at power-on
         public int CurrentTool { get; set; } = 0;
         public bool CoolantOn { get; set; } = false;
 
@@ -88,7 +88,7 @@ namespace FanucSimulator
         // profile driving the canvas render - not integrated with alarms/collision (that's a later,
         // separate follow-up).
         public double StockDiameter { get; set; } = 76.2; // mm, ~3in, matches the user's own test part
-        public double StockLength { get; set; } = 100;    // mm
+        public double StockLength { get; set; } = 101.6;    // mm
         public StockProfile Stock { get; private set; }
 
         // Called when the operator changes stock dimensions mid-session - a fresh blank, not a
@@ -110,6 +110,17 @@ namespace FanucSimulator
         public const double MaxZ = 300;
         public const double MinZ = -500;
         private const double InchToMm = 25.4;
+
+        // Where G28 parks the turret. On a real lathe the reference position is at the positive
+        // extreme of both axes and machine zero sits there, which is why the reference photo of the
+        // real control reads MACHINE X-7.6619 Z-7.0527 - the part is at NEGATIVE machine coordinates.
+        // This simulator doesn't model a machine origin distinct from the work origin (its MACHINE
+        // readout is just work + work offset), so reference return used to mean work X0 Z0: the
+        // spindle centreline at the face, i.e. straight through the part. These constants at least
+        // put the turret somewhere clear instead. Properly modelling machine-zero-at-reference would
+        // let MACHINE read negative like the real screen - a worthwhile, separate change.
+        public const double ReferenceX = MaxX;
+        public const double ReferenceZ = 150;
 
         private int _activeOffsetNumber = 0;
 
@@ -301,9 +312,9 @@ namespace FanucSimulator
                 if (hasVia)
                 {
                     TryMoveTo(viaX, viaZ, rapid: true);
-                    Messages.Add($"G28: Via intermediate point X{viaX:F3} Z{viaZ:F3}");
+                    Messages.Add($"G28: Via intermediate point X{Len(viaX)} Z{Len(viaZ)}");
                 }
-                MoveTo(0, 0, rapid: true);
+                TryMoveTo(ReferenceX, ReferenceZ, rapid: true);
                 Messages.Add("G28: Return to reference position");
                 return;
             }
@@ -313,7 +324,7 @@ namespace FanucSimulator
             {
                 if (block.Params.TryGetValue("X", out var presetX)) X = ToMm(presetX);
                 if (block.Params.TryGetValue("Z", out var presetZ)) Z = ToMm(presetZ);
-                Messages.Add($"G50: Coordinate preset X{X:F2} Z{Z:F2}");
+                Messages.Add($"G50: Coordinate preset X{Len(X)} Z{Len(Z)}");
                 return;
             }
 
@@ -426,7 +437,7 @@ namespace FanucSimulator
                     Modal.Spindle = SpindleMode.ConstantSurfaceSpeed;
                     if (block.Params.TryGetValue("Speed", out var vc))
                         Modal.SurfaceSpeedVc = vc;
-                    Messages.Add($"G96: Constant surface speed @ {Modal.SurfaceSpeedVc:F0} m/min");
+                    Messages.Add($"G96: Constant surface speed @ {Modal.SurfaceSpeedVc:F0} {(Modal.Units == UnitsMode.Inch ? "SFM" : "m/min")}");
                     RecalculateCssSpeed();
                     break;
                 case 97:
@@ -603,10 +614,18 @@ namespace FanucSimulator
             }
         }
 
+        // Constant surface speed. The S value under G96 is m/min in metric but surface FEET per
+        // minute in inch, and the diameter it divides is held here in mm either way, so the two
+        // modes need different constants:
+        //   metric  rpm = Vc(m/min) * 1000 / (pi * D_mm)
+        //   inch    rpm = Vc(sfm)   *   12 / (pi * D_in), and D_in = D_mm / 25.4,
+        //                              which folds to Vc * 304.8 / (pi * D_mm)
+        // Using the metric constant in inch mode overstated the speed by 3.28x.
         private void RecalculateCssSpeed()
         {
-            var diameter = Math.Max(X, 0.1);
-            var rpm = Modal.SurfaceSpeedVc * 1000 / (Math.PI * diameter);
+            var diameterMm = Math.Max(X, 0.1);
+            var constant = Modal.Units == UnitsMode.Inch ? 304.8 : 1000.0;
+            var rpm = Modal.SurfaceSpeedVc * constant / (Math.PI * diameterMm);
             if (Modal.MaxCssRpm.HasValue)
                 rpm = Math.Min(rpm, Modal.MaxCssRpm.Value);
             SpindleSpeed = rpm;
@@ -693,7 +712,7 @@ namespace FanucSimulator
             // reflect the diameter just arrived at (already relied on by the G96 test: a move to a
             // smaller X50 diameter expects RPM recomputed for X50, not the X100 starting point).
             if (block.Params.TryGetValue("Feed", out var feed))
-                FeedRate = feed;
+                SetFeedRate(feed);
 
             if (!TryMoveTo(targetX, targetZ, rapid: Modal.Motion == MotionMode.Rapid))
                 return;
@@ -701,9 +720,8 @@ namespace FanucSimulator
             if (Modal.Spindle == SpindleMode.ConstantSurfaceSpeed)
                 RecalculateCssSpeed();
 
-            var feedLabel = Modal.Feed == FeedMode.PerRevolution ? "mm/rev" : "mm/min";
             var moveType = Modal.Motion == MotionMode.Rapid ? "G00" : "G01";
-            Messages.Add($"{moveType}: X{X:F2} Z{Z:F2} @ {FeedRate:F2}{feedLabel}");
+            Messages.Add($"{moveType}: X{Len(X)} Z{Len(Z)} @ {Len(FeedRate)} {FeedUnit}");
         }
 
         // Alarm-checks and moves if in range; returns whether the move happened. Shared by linear
@@ -761,7 +779,7 @@ namespace FanucSimulator
             // Same F-word-applies-to-this-block's-own-move fix as ApplyMotion - must happen before
             // the arc actually moves, not after.
             if (block.Params.TryGetValue("Feed", out var feed))
-                FeedRate = feed;
+                SetFeedRate(feed);
 
             // True arc length (radius * sweep angle), not the tessellated chords' summed straight-
             // line distance - close enough to be a near-exact approximation, but "close" isn't
@@ -784,9 +802,8 @@ namespace FanucSimulator
             if (Modal.Spindle == SpindleMode.ConstantSurfaceSpeed)
                 RecalculateCssSpeed();
 
-            var feedLabel = Modal.Feed == FeedMode.PerRevolution ? "mm/rev" : "mm/min";
             var moveType = clockwise ? "G02" : "G03";
-            Messages.Add($"{moveType}: X{X:F2} Z{Z:F2} @ {FeedRate:F2}{feedLabel}");
+            Messages.Add($"{moveType}: X{Len(X)} Z{Len(Z)} @ {Len(FeedRate)} {FeedUnit}");
         }
 
         // Standard two-circle-intersection: both candidate centers are equidistant (r) from both
@@ -998,6 +1015,27 @@ namespace FanucSimulator
             return (x1 + t * dx1, z1 + t * dz1);
         }
 
-        private double ToMm(double value) => Modal.Units == UnitsMode.Inch ? value * InchToMm : value;
+        // Public so the UI can convert operator-entered values (stock size) the same way the engine
+        // converts programmed ones, rather than keeping a second copy of the 25.4 constant.
+        public double ToMm(double value) => Modal.Units == UnitsMode.Inch ? value * InchToMm : value;
+
+        // Converts mm back to whatever the active unit is - for display, and for log strings that
+        // must echo the number the operator actually programmed rather than the internal one.
+        public double FromMm(double valueMm) => Modal.Units == UnitsMode.Inch ? valueMm / InchToMm : valueMm;
+
+        // Every F word goes through here. FeedRate is held in mm (per minute or per rev) to match
+        // X/Z, so an inch-mode F has to be converted on the way in exactly like a coordinate does -
+        // it wasn't, which was harmless only for as long as metric was the power-on default. A
+        // threading lead is an F word too and converts identically.
+        private void SetFeedRate(double commanded) => FeedRate = ToMm(commanded);
+
+        // Operator-visible log strings must echo the active unit, not the mm the engine happens to
+        // store - a message reading "retract 0.50mm" against a program that asked for R.02 in inch
+        // is actively misleading about what the control did.
+        private string LenUnit => Modal.Units == UnitsMode.Inch ? "in" : "mm";
+        private string Len(double valueMm) => FromMm(valueMm).ToString(Modal.Units == UnitsMode.Inch ? "F4" : "F3");
+        private string FeedUnit => Modal.Units == UnitsMode.Inch
+            ? (Modal.Feed == FeedMode.PerRevolution ? "in/rev" : "in/min")
+            : (Modal.Feed == FeedMode.PerRevolution ? "mm/rev" : "mm/min");
     }
 }

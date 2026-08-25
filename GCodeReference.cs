@@ -19,7 +19,7 @@ namespace FanucSimulator
             ["G04"] = "Dwell. Pauses execution for a specified time (P = milliseconds, X = seconds) with the spindle still turning - used to clean up a corner, form a groove bottom, or break a chip.",
             ["G20"] = "Inch programming mode. All following X/Z/F values are interpreted in inches until G21 is used.",
             ["G21"] = "Metric programming mode (millimeters). This is the default and most common mode.",
-            ["G28"] = "Return to reference (home) position. Sends the machine to its fixed reference point, typically for tool changes or at the end of a program. Giving X/Z (or U/W) rapids via that intermediate point first, which is how a program clears a fixture before homing; a bare G28 goes straight there.",
+            ["G28"] = "Return to reference (home) position - the fixed point at the positive extreme of both axes where the turret parks, used for tool changes and at the end of a program. Giving X/Z (or U/W) rapids via that intermediate point first, which is how a program clears a fixture before homing; a bare G28 goes straight there. Note this is NOT X0 Z0: on a lathe that would be the spindle centreline at the face, straight through the part.",
             ["G40"] = "Cancel tool nose radius compensation. The control stops offsetting the toolpath for the tool's nose radius - programmed coordinates are followed exactly.",
             ["G41"] = "Tool nose radius compensation, left. Offsets the toolpath to the left of the programmed path (looking in the direction of travel) by the tool's nose radius, keeping tapers and angles accurate.",
             ["G42"] = "Tool nose radius compensation, right. Same idea as G41 but offsets to the right of the programmed path.",

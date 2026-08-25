@@ -21,7 +21,11 @@ namespace FanucSimulator
     public class ModalState
     {
         public MotionMode Motion { get; set; } = MotionMode.Rapid;
-        public UnitsMode Units { get; set; } = UnitsMode.Metric;
+
+        // Powers on in inch, matching the reference machine (its screen reads INCH/M and carries G20
+        // in the modal block). A program that declares G20/G21 for itself is unaffected either way -
+        // this is only the state before anything sets it, plus MDI.
+        public UnitsMode Units { get; set; } = UnitsMode.Inch;
         public FeedMode Feed { get; set; } = FeedMode.PerRevolution;
         public SpindleMode Spindle { get; set; } = SpindleMode.ConstantRpm;
         public CutterComp Comp { get; set; } = CutterComp.Off;

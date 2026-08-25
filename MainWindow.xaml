@@ -110,10 +110,10 @@
             </Border>
 
             <StackPanel Grid.Row="1" Orientation="Horizontal" Background="#1a1a1a" Margin="0,4,0,0">
-                <TextBlock Text="Stock Diameter (mm):" VerticalAlignment="Center" Foreground="{StaticResource MutedText}" Margin="6,4,4,4"/>
-                <TextBox x:Name="StockDiameterInput" Width="55" Background="#0a0a0a" Foreground="{StaticResource ValueText}" Text="76.2"/>
-                <TextBlock Text="Length (mm):" VerticalAlignment="Center" Foreground="{StaticResource MutedText}" Margin="12,0,4,0"/>
-                <TextBox x:Name="StockLengthInput" Width="55" Background="#0a0a0a" Foreground="{StaticResource ValueText}" Text="100"/>
+                <TextBlock x:Name="StockDiameterLabel" Text="Stock Diameter (in):" VerticalAlignment="Center" Foreground="{StaticResource MutedText}" Margin="6,4,4,4"/>
+                <TextBox x:Name="StockDiameterInput" Width="62" Background="#0a0a0a" Foreground="{StaticResource ValueText}" Text="3.0000"/>
+                <TextBlock x:Name="StockLengthLabel" Text="Length (in):" VerticalAlignment="Center" Foreground="{StaticResource MutedText}" Margin="12,0,4,0"/>
+                <TextBox x:Name="StockLengthInput" Width="62" Background="#0a0a0a" Foreground="{StaticResource ValueText}" Text="4.0000"/>
                 <Button Content="Apply" Click="ApplyStock_Click" Style="{StaticResource PanelButton}" Margin="12,0,0,0"/>
             </StackPanel>
         </Grid>

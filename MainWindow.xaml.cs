@@ -182,8 +182,7 @@ namespace FanucSimulator
             _runSimulatedSeconds = 0;
             _cycleSimulatedSeconds = 0;
             _partCount = 0;
-            StockDiameterInput.Text = _sim.StockDiameter.ToString("F1");
-            StockLengthInput.Text = _sim.StockLength.ToString("F1");
+            RefreshStockUnitDisplay(force: true);
             UpdateDisplay();
             RenderLathe();
             RefreshOffsetGrids();
@@ -205,10 +204,12 @@ namespace FanucSimulator
 
         private void ApplyStock_Click(object sender, RoutedEventArgs e)
         {
+            // The boxes are in whatever unit is active; the engine keeps stock in mm like everything
+            // else, so convert on the way in exactly as a programmed coordinate would be.
             if (double.TryParse(StockDiameterInput.Text, out var dia) && dia > 0)
-                _sim.StockDiameter = dia;
+                _sim.StockDiameter = _sim.ToMm(dia);
             if (double.TryParse(StockLengthInput.Text, out var len) && len > 0)
-                _sim.StockLength = len;
+                _sim.StockLength = _sim.ToMm(len);
 
             // Changing stock dimensions means chucking a fresh blank, not resizing an already-cut part.
             _sim.ResetStockProfile();
@@ -1152,9 +1153,43 @@ namespace FanucSimulator
             return panel;
         }
 
+        // Positions are held in mm internally and displayed in whatever unit is active, at the
+        // decimal count a real control uses for it - 4 places in inch, 3 in metric (the reference
+        // machine reads 7.3000).
+        private bool InInch => _sim.Modal.Units == UnitsMode.Inch;
+        private string FormatPos(double valueMm) => _sim.FromMm(valueMm).ToString(InInch ? "F4" : "F3");
+        private string FormatFeed(double feedMm) => _sim.FromMm(feedMm).ToString(InInch ? "F4" : "F3");
+
+        // Tracks which unit the stock boxes were last written in, so they're only rewritten when the
+        // active unit actually changes (a G20/G21 in a program, or Reset). Rewriting them on every
+        // display refresh would fight the operator whenever they're mid-way through typing a value.
+        private UnitsMode? _stockBoxesUnits;
+
+        private void RefreshStockUnitDisplay(bool force = false)
+        {
+            if (!force && _stockBoxesUnits == _sim.Modal.Units)
+                return;
+            _stockBoxesUnits = _sim.Modal.Units;
+
+            var unit = InInch ? "in" : "mm";
+            StockDiameterLabel.Text = $"Stock Diameter ({unit}):";
+            StockLengthLabel.Text = $"Length ({unit}):";
+            StockDiameterInput.Text = FormatPos(_sim.StockDiameter);
+            StockLengthInput.Text = FormatPos(_sim.StockLength);
+        }
+
+        // The real screen spells the feed unit out as INCH/M, INCH/REV, MM/MIN or MM/REV.
+        private string FeedUnitLabel() => (InInch, _sim.Modal.Feed == FeedMode.PerRevolution) switch
+        {
+            (true, true) => "INCH/REV",
+            (true, false) => "INCH/M",
+            (false, true) => "MM/REV",
+            (false, false) => "MM/MIN",
+        };
+
         // POS(ALL)'s ruled boxes column-align their numbers under each other, which only works with
         // the right-aligned padding a real control's fixed-width screen font gives for free.
-        private static string AxisLine(char axis, double value) => $"{axis} {value,10:F3}";
+        private string AxisLine(char axis, double valueMm) => $"{axis} {FormatPos(valueMm),10}";
 
         // The O-number the real control shows top-right comes from the program itself, not the file
         // name - so read it back out of the editor text the same way the control would. Falls back to
@@ -1180,8 +1215,8 @@ namespace FanucSimulator
         {
             AbsXDisplay.Text = AxisLine('X', _sim.X);
             AbsZDisplay.Text = AxisLine('Z', _sim.Z);
-            AbsXBigDisplay.Text = _sim.X.ToString("F3");
-            AbsZBigDisplay.Text = _sim.Z.ToString("F3");
+            AbsXBigDisplay.Text = FormatPos(_sim.X);
+            AbsZBigDisplay.Text = FormatPos(_sim.Z);
 
             // No separate relative-counter origin is modelled (a real control lets the operator zero
             // U/W independently of the work offset), so RELATIVE tracks ABSOLUTE - which is also what
@@ -1224,9 +1259,8 @@ namespace FanucSimulator
             // direction is the only continuously-held M state this simulator actually tracks.
             ModalMCodeDisplay.Text = "M   " + _sim.SpindleDir switch { 1 => "03", -1 => "04", _ => "05" };
 
-            var feedLabel = _sim.Modal.Feed == FeedMode.PerRevolution ? "mm/rev" : "mm/min";
-            FeedDisplay.Text = $"{_sim.FeedRate:F2} {feedLabel}";
-            AllFeedDisplay.Text = $"{_sim.FeedRate:F2} {feedLabel}";
+            FeedDisplay.Text = $"{FormatFeed(_sim.FeedRate)} {FeedUnitLabel()}";
+            AllFeedDisplay.Text = $"{FormatFeed(_sim.FeedRate)} {FeedUnitLabel()}";
 
             var dirLabel = _sim.SpindleDir switch { 1 => "FWD", -1 => "REV", _ => "STOPPED" };
             var modeLabel = _sim.Modal.Spindle == SpindleMode.ConstantSurfaceSpeed ? "CSS" : "RPM";
@@ -1235,6 +1269,7 @@ namespace FanucSimulator
 
             ProgramIdDisplay.Text = $"{CurrentProgramNumber()} N00000";
             AllProgramPreview.Text = ProgramPreviewText();
+            RefreshStockUnitDisplay();
 
             UpdateStatsDisplay();
             UpdateEmgBadge();
