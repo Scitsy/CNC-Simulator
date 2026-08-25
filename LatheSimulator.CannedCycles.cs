@@ -10,6 +10,21 @@ namespace FanucSimulator
         private double _roughingRetract = 1.0;
         private double _groovingRetract = 0.5;
         private double _drillingRetract = 0.5;
+
+        // A system-A single cycle (G90/G92/G94) keeps its own coordinates modal: once armed, a block
+        // giving only a new X repeats the cycle at that depth with the previously commanded Z and
+        // taper. Without this the repeat block would take Z from the current position - which, since
+        // every pass returns to the start point, means zero cut length.
+        private double? _cycleModalX;
+        private double? _cycleModalZ;
+        private double _cycleModalTaper;
+
+        private void ResetSingleCycleModals()
+        {
+            _cycleModalX = null;
+            _cycleModalZ = null;
+            _cycleModalTaper = 0;
+        }
         private int _threadFinishPasses = 1;
         private double _threadTipAngle = 60;
         private double _threadMinDepthOfCut = 0.02;
@@ -121,6 +136,106 @@ namespace FanucSimulator
             var allowedNames = string.Join(" or ", allowed);
             Alarms.Add(new Alarm(85, $"G{code}: Wrong tool type for {cycleName} - T{CurrentTool:D2} is {tool.Type}, expected {allowedNames}"));
             return false;
+        }
+
+        // The three single canned cycles of G-code system A. Unlike G70-G76 these are modal and
+        // one block long: the programmer repeats blocks with a new depth to take successive passes,
+        // and the tool returns to the start point after every one. All three trace the same
+        // four-move rectangle from the start point A, differing only in which axis leads and which
+        // moves cut:
+        //   G90 turning:  rapid X in, feed Z, feed X out, rapid Z back
+        //   G94 facing:   rapid Z in, feed X, feed Z back, rapid X out
+        //   G92 threading: rapid X in, thread-feed Z, rapid X out, rapid Z back
+        //
+        // R is the optional taper. FANUC specifies it as a signed radius value, so on the
+        // diameter-programmed X axis it counts double - hence the 2*R below. Absent R means a
+        // straight cut.
+        private void ExecuteSingleCycle(GCodeParser.Block block)
+        {
+            // Resolve each axis from the block if it names one, otherwise from the cycle's remembered
+            // value - not from the current position, which is always the start point by the time a
+            // repeat block runs.
+            var hasX = block.Params.ContainsKey("X") || block.Params.ContainsKey("U");
+            var hasZ = block.Params.ContainsKey("Z") || block.Params.ContainsKey("W");
+            var (resolvedX, resolvedZ, hasMotion) = ResolveTargetXZ(X, Z, block);
+            if (!hasMotion)
+                return;
+
+            var targetX = hasX ? resolvedX : (_cycleModalX ?? resolvedX);
+            var targetZ = hasZ ? resolvedZ : (_cycleModalZ ?? resolvedZ);
+            _cycleModalX = targetX;
+            _cycleModalZ = targetZ;
+
+            var cycle = Modal.Cycle;
+            var code = cycle switch { CannedCycle.Turning => 90, CannedCycle.Threading => 92, _ => 94 };
+            var allowed = cycle == CannedCycle.Threading
+                ? new[] { ToolType.Threading }
+                : new[] { ToolType.OdTurning, ToolType.IdBoring };
+            var cycleName = cycle switch
+            {
+                CannedCycle.Turning => "OD/ID turning",
+                CannedCycle.Threading => "thread cutting",
+                _ => "end face turning",
+            };
+            if (!CheckToolType(code, cycleName, allowed))
+                return;
+
+            if (block.Params.TryGetValue("Feed", out var feed))
+                FeedRate = feed;
+
+            if (block.Params.TryGetValue("R", out var rVal))
+                _cycleModalTaper = ToMm(rVal);
+            var taper = _cycleModalTaper;
+            var startX = X;
+            var startZ = Z;
+
+            if (cycle == CannedCycle.Facing)
+            {
+                // Taper on a facing cycle runs along Z, so it shifts where the X cut begins.
+                if (!TryMoveTo(startX, targetZ + taper, rapid: true)) return;
+                if (!TryMoveTo(targetX, targetZ, rapid: false)) return;
+                if (!TryMoveTo(targetX, startZ, rapid: false)) return;
+                if (!TryMoveTo(startX, startZ, rapid: true)) return;
+            }
+            else
+            {
+                var cutStartX = targetX + 2 * taper;
+                if (!TryMoveTo(cutStartX, startZ, rapid: true)) return;
+                if (!TryMoveTo(targetX, targetZ, rapid: false)) return;
+                // Threading retracts clear at rapid; turning feeds out, taking the shoulder cut.
+                if (!TryMoveTo(startX, targetZ, rapid: cycle == CannedCycle.Threading)) return;
+                if (!TryMoveTo(startX, startZ, rapid: true)) return;
+            }
+
+            var feedLabel = Modal.Feed == FeedMode.PerRevolution ? "mm/rev" : "mm/min";
+            var taperNote = Math.Abs(taper) > 1e-9 ? $", taper R{taper:F3}" : "";
+            Messages.Add($"G{code}: {cycleName} cycle to X{targetX:F3} Z{targetZ:F3}{taperNote} @ {FeedRate:F3}{feedLabel}");
+        }
+
+        // Single-block threading: one constant-lead pass along the commanded vector, with no cycle
+        // wrapper at all - the programmer handles infeed and retract themselves. G33 is the same
+        // thing under an alternate number that some controls accept.
+        private void ExecuteSingleThread(GCodeParser.Block block)
+        {
+            if (!CheckToolType(32, "threading", ToolType.Threading))
+                return;
+
+            var (targetX, targetZ, hasMotion) = ResolveTargetXZ(X, Z, block);
+            if (!hasMotion)
+            {
+                Alarms.Add(new Alarm(79, "G32: Missing X/Z target"));
+                return;
+            }
+
+            // F on a threading block is the lead (distance per spindle revolution), not a feed rate,
+            // so the move is inherently per-revolution regardless of the active G98/G99.
+            if (block.Params.TryGetValue("Feed", out var lead))
+                FeedRate = lead;
+
+            if (!TryMoveTo(targetX, targetZ, rapid: false))
+                return;
+
+            Messages.Add($"G32: Thread cut to X{targetX:F3} Z{targetZ:F3} @ lead {FeedRate:F4}");
         }
 
         private void ExecuteThreadingCycle(GCodeParser.Block block)

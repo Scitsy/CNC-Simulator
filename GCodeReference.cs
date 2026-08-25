@@ -19,7 +19,7 @@ namespace FanucSimulator
             ["G04"] = "Dwell. Pauses execution for a specified time (P = milliseconds, X = seconds) with the spindle still turning - used to clean up a corner, form a groove bottom, or break a chip.",
             ["G20"] = "Inch programming mode. All following X/Z/F values are interpreted in inches until G21 is used.",
             ["G21"] = "Metric programming mode (millimeters). This is the default and most common mode.",
-            ["G28"] = "Return to reference (home) position. Sends the machine to its fixed reference point, typically for tool changes or at the end of a program.",
+            ["G28"] = "Return to reference (home) position. Sends the machine to its fixed reference point, typically for tool changes or at the end of a program. Giving X/Z (or U/W) rapids via that intermediate point first, which is how a program clears a fixture before homing; a bare G28 goes straight there.",
             ["G40"] = "Cancel tool nose radius compensation. The control stops offsetting the toolpath for the tool's nose radius - programmed coordinates are followed exactly.",
             ["G41"] = "Tool nose radius compensation, left. Offsets the toolpath to the left of the programmed path (looking in the direction of travel) by the tool's nose radius, keeping tapers and angles accurate.",
             ["G42"] = "Tool nose radius compensation, right. Same idea as G41 but offsets to the right of the programmed path.",
@@ -39,9 +39,11 @@ namespace FanucSimulator
             ["G65"] = "Custom macro call. P=the O-number of the macro to run, L=repeat count (default 1), plus argument letters (A-Z, mostly - see the Custom Macro B Basics tip) that get bound to that macro's own local variables (#1-#33) for the duration of the call. Unlike M98, each G65 call gets a fresh, isolated set of local variables, and calls can nest (a macro can call another macro).",
             ["G66"] = "Modal custom macro call. Same P/L/argument-letter syntax as G65, but instead of calling once, arms the macro to automatically run again before every subsequent block that commands axis motion (X/Z/etc.), using the same arguments each time - handy for repeating a canned sub-routine (a peck cycle, a chamfer pass) at a series of programmed positions without a G65 on every line. Stays active until G67. Does not fire before G71/G72/G75/G76 setup or trigger blocks.",
             ["G67"] = "Cancel modal custom macro call (G66). The armed macro stops auto-firing; subsequent motion blocks behave normally again.",
-            ["G80"] = "Cancel canned cycle. Turns off any active drilling/tapping/boring cycle (G73-G89 on machining centers; rarely needed on a lathe but commonly included defensively at program start).",
-            ["G90"] = "Absolute positioning. X/Z values are coordinates relative to the current work coordinate system origin.",
-            ["G91"] = "Incremental positioning. X/Z values are distances relative to the tool's current position, not absolute coordinates.",
+            ["G80"] = "Cancel canned cycle. Turns off an active single cycle (G90/G92/G94), returning coordinate blocks to ordinary moves. Commonly included defensively at program start. Does not affect G70-G76, which aren't modal - they run once per trigger block.",
+            ["G90"] = "OD/ID turning cycle (single canned cycle). 'G90 X_ Z_ F_' cuts a straight pass to diameter X over length Z and returns to the start point: rapid in X, feed along Z, feed out in X, rapid back in Z. Add R for a taper (a signed radius value). It is modal - once armed, a following block giving only a new X repeats the cycle at that depth, which is how successive roughing passes are programmed. Cancel with G80. NOTE: G90 means absolute positioning only in G-code systems B and C; this control uses system A, where absolute/incremental is X/Z vs U/W instead.",
+            ["G92"] = "Thread cutting cycle (single canned cycle). 'G92 X_ Z_ F_' cuts one thread pass to diameter X over length Z at lead F, then retracts and returns to the start point. Repeat blocks with decreasing X to take successive passes. Add R for a tapered thread. Modal, cancelled by G80. Requires a threading tool.",
+            ["G94"] = "End face turning cycle (single canned cycle). The facing counterpart of G90: 'G94 X_ Z_ F_' rapids in Z, feeds inward in X to face to diameter X, then returns to the start point. Add R to taper along Z. Modal, cancelled by G80.",
+            ["G32"] = "Single-block thread cutting. Cuts one constant-lead thread pass along the commanded vector, with F as the lead (distance per spindle revolution) rather than a feed rate. Unlike G92 there is no cycle wrapper - the program handles its own infeed and retract. G33 is accepted as an alias.",
             ["G96"] = "Constant surface speed (CSS). The control continuously adjusts spindle RPM as the tool moves in X so cutting speed at the tip stays constant (S = surface speed, e.g. m/min) - keeps finish and tool life consistent as diameter changes.",
             ["G97"] = "Constant spindle speed. Cancels CSS - the spindle runs at the RPM you specify with S, regardless of diameter.",
             ["G98"] = "Feed per minute. The F value is interpreted as distance per minute.",
@@ -52,7 +54,8 @@ namespace FanucSimulator
         {
             ["M00"] = "Program stop. Pauses the program completely - press Cycle Start (Execute) to continue. Often used before an inspection or manual step.",
             ["M01"] = "Optional stop. Same as M00 but only pauses if the operator has enabled the Optional Stop switch on the control - not modeled here, so this always just logs and continues.",
-            ["M02"] = "Program end (older/alternate form of M30 that doesn't rewind). Not separately simulated - see M30.",
+            ["M02"] = "Program end. Stops the program where it stands; unlike M30 it does not rewind the cursor back to the top.",
+            ["M19"] = "Spindle orient. Stops the spindle at a fixed angular position, used before a tool change or a driven-tool operation.",
             ["M03"] = "Spindle on, forward (clockwise, viewed from the tailstock). S sets the speed.",
             ["M04"] = "Spindle on, reverse (counter-clockwise).",
             ["M05"] = "Spindle stop.",
@@ -66,6 +69,16 @@ namespace FanucSimulator
 
         public static readonly List<SetupTip> SetupTips = new()
         {
+            new SetupTip
+            {
+                Title = "G-Code System A (and why there is no G90/G91 here)",
+                Body = "This control uses FANUC G-code system A, the lathe default. That has one consequence people coming from a machining center trip over constantly: absolute vs incremental is NOT selected by G90/G91. Instead it is chosen per address - X and Z are always absolute, U and W are always incremental, and you can mix them in the same block ('G01 X20 W-5' means absolute diameter 20, five further along Z). If a block gives both for one axis, the incremental address wins. In system A, G90/G92/G94 are instead the three single canned cycles (OD/ID turning, thread cutting, end face turning). Systems B and C are the ones where G90/G91 mean absolute/incremental - if you paste a program written for one of those, its G90/G91 lines will not do what you expect. Codes this control does not support now raise an alarm rather than being silently ignored, so a mistyped or unsupported code shows up immediately instead of quietly doing nothing."
+            },
+            new SetupTip
+            {
+                Title = "Auxiliary M-Codes Are Machine-Specific (these are GUESSES)",
+                Body = "FANUC defines the common M-codes - M00/M01/M02/M30 program control, M03/M04/M05 spindle, M08/M09 coolant, M19 orient, M98/M99 subprograms - and those mean the same thing on every FANUC lathe. Everything else (chuck clamp/unclamp, tailstock quill, parts catcher, wash gun, chip conveyor) is assigned by the machine BUILDER in the machine's ladder, so the numbers differ from machine to machine. The auxiliary codes this simulator accepts - M10/M11 chuck, M12/M13 tailstock, M21/M22 parts catcher, M50/M51 wash gun, M52/M53 conveyor - were inferred from the reference machine's operator panel, which shows the functions but not their numbers. TREAT THEM AS PLACEHOLDERS: they are very unlikely to match your machine. Check your machine's own M-code list and correct them (they live in one table in LatheSimulator.cs). Running an unverified auxiliary M-code on real iron is how people crash chucks."
+            },
             new SetupTip
             {
                 Title = "Finding Your Part's Center / Zero",

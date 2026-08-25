@@ -20,6 +20,15 @@ namespace FanucSimulator
             public int Line { get; set; }
             public string RawCode { get; set; } = "";
             public List<(char Type, int Code)> Commands { get; set; } = new();
+
+            // G/M codes carrying a decimal suffix (G13.1, G50.1, G40.1, G80.4 ...) are kept apart
+            // from Commands, which stores an int. Truncating them in there would silently turn
+            // G50.1 (programmable mirror image cancel) into G50 (spindle speed clamp) and G40.1
+            // (normal direction control cancel) into G40 (comp cancel) - actively wrong behaviour,
+            // not merely a missing feature. Held as formatted text ("G13.1") because nothing
+            // executes them: they are accepted, shown on the modal block, and otherwise inert.
+            public List<string> ExtendedCodes { get; set; } = new();
+
             public Dictionary<string, double> Params { get; set; } = new();
 
             // True for any line containing '#' variables, '[...]' expressions, IF/GOTO/WHILE
@@ -62,7 +71,7 @@ namespace FanucSimulator
                     continue;
 
                 var block = ParseLine(code, i + 1);
-                if (block.Commands.Count > 0 || block.Params.Count > 0 || block.HasMacroSyntax)
+                if (block.Commands.Count > 0 || block.Params.Count > 0 || block.HasMacroSyntax || block.ExtendedCodes.Count > 0)
                     blocks.Add(block);
             }
 
@@ -139,7 +148,12 @@ namespace FanucSimulator
 
                 if (letter == "G" || letter == "M")
                 {
-                    block.Commands.Add((letter[0], (int)value));
+                    // A decimal suffix makes this a distinct code in its own right (G13.1 is not a
+                    // flavour of G13), so it must not be truncated into Commands - see ExtendedCodes.
+                    if (System.Math.Abs(value - System.Math.Truncate(value)) > 1e-9)
+                        block.ExtendedCodes.Add(letter + value.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture));
+                    else
+                        block.Commands.Add((letter[0], (int)value));
                     continue;
                 }
 

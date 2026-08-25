@@ -578,16 +578,21 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
 // prior test coverage - found by cross-referencing GCodeReference.cs's documented set against
 // every .nc/.gcode fixture and inline test program) ----
 
-// 34. G91 incremental positioning: relative moves must accumulate from the current position, not
-// jump to absolute coordinates.
+// 34. Incremental positioning via U/W. G-code system A has no G90/G91 modal pair - incremental is
+// expressed by using U/W instead of X/Z, so these moves must accumulate from the current position.
 {
     var sim = new LatheSimulator();
-    var program = "G21\nT0101\nG00 X10 Z0\nG91\nG01 X5 Z-3 F0.1\nG01 X5 Z-3 F0.1\nM30\n";
+    var program = "G21\nT0101\nG00 X10 Z0\nG01 U5 W-3 F0.1\nG01 U5 W-3 F0.1\nM30\n";
     var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
-    Console.WriteLine("[34] G91 incremental positioning accumulates from current position");
+    Console.WriteLine("[34] U/W incremental positioning accumulates from current position");
     Check("no alarms", alarms.Count == 0);
     Check("X accumulated 10+5+5=20", Math.Abs(sim.X - 20) < 0.01);
     Check("Z accumulated 0-3-3=-6", Math.Abs(sim.Z - (-6)) < 0.01);
+
+    // X/Z stay absolute regardless of what came before - no modal can make them incremental.
+    var sim2 = new LatheSimulator();
+    RunFull(sim2, new GCodeParser().Parse("G21\nT0101\nG00 X10 Z0\nG01 U5 W-3 F0.1\nG01 X8 Z-1 F0.1\nM30\n"), out _);
+    Check("a later X/Z block is absolute, not incremental", Math.Abs(sim2.X - 8) < 0.01 && Math.Abs(sim2.Z - (-1)) < 0.01);
 }
 
 // 35. G41/G42/G40 cutter nose radius compensation: a substantial real feature (perpendicular-to-
@@ -935,6 +940,141 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
     Check("no alarms", alarms.Count == 0);
     Check("15s total (12s @ F50 + 3s @ F200, not 24s if the old feed leaked into the second move)",
         Math.Abs(sim.SimulatedSecondsElapsed - 15.0) < 0.001);
+}
+
+// ---- G-code system A: single canned cycles, strictness, decimal codes ----
+
+// 56. G90 OD turning cycle: rapid X in, feed Z, feed X out, rapid Z back - ending where it started,
+// having cut the commanded diameter over the commanded length.
+{
+    var sim = new LatheSimulator();
+    var program = "G21\nT0101\nG00 X60 Z2\nG90 X50 Z-20 F0.2\nM30\n";
+    var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
+    Console.WriteLine("[56] G90 OD turning cycle");
+    Check("no alarms", alarms.Count == 0);
+    Check("returns to the start point X60 Z2", Math.Abs(sim.X - 60) < 0.01 && Math.Abs(sim.Z - 2) < 0.01);
+    Check("cut to ~50mm dia at Z-10 (mid-cut)", Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -10)] - 50) < 0.5);
+    Check("stock beyond the cut (Z-30) still raw ~76.2mm", Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -30)] - 76.2) < 0.5);
+}
+
+// 57. G90 is modal: a following block with only a new X repeats the cycle at that depth without
+// restating the G-code. This is the whole point of a "single canned cycle".
+{
+    var sim = new LatheSimulator();
+    var program = "G21\nT0101\nG00 X60 Z2\nG90 X55 Z-20 F0.2\nX50\nX45\nM30\n";
+    var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
+    Console.WriteLine("[57] G90 is modal - bare X blocks repeat the cycle deeper");
+    Check("no alarms", alarms.Count == 0);
+    Check("final pass reached ~45mm dia", Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -10)] - 45) < 0.5);
+    Check("still parked at the start point", Math.Abs(sim.X - 60) < 0.01 && Math.Abs(sim.Z - 2) < 0.01);
+}
+
+// 58. G80 cancels the modal cycle - a coordinate block after it is an ordinary move again, not
+// another cycle pass.
+{
+    var sim = new LatheSimulator();
+    var program = "G21\nT0101\nG00 X60 Z2\nG90 X50 Z-20 F0.2\nG80\nG00 X40 Z5\nM30\n";
+    var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
+    Console.WriteLine("[58] G80 cancels the modal single cycle");
+    Check("no alarms", alarms.Count == 0);
+    Check("the post-G80 block moved the tool rather than cycling", Math.Abs(sim.X - 40) < 0.01 && Math.Abs(sim.Z - 5) < 0.01);
+}
+
+// 59. G94 end-face turning cycle - the facing analogue of G90, so it faces to the commanded Z.
+{
+    var sim = new LatheSimulator();
+    var program = "G21\nT0101\nG00 X76.2 Z2\nG94 X30 Z-2 F0.2\nM30\n";
+    var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
+    Console.WriteLine("[59] G94 end face turning cycle");
+    Check("no alarms", alarms.Count == 0);
+    Check("returns to the start point", Math.Abs(sim.X - 76.2) < 0.01 && Math.Abs(sim.Z - 2) < 0.01);
+    // Facing to Z-2 removes everything outside X30 between the original face and Z-2, so the
+    // profile there collapses to the cut diameter; material behind the cut is untouched.
+    Check("faced away to ~30mm dia at Z-1 (inside the faced region)", Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -1)] - 30) < 0.5);
+    Check("stock behind the face (Z-5) still raw ~76.2mm", Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -5)] - 76.2) < 0.5);
+}
+
+// 60. G92 thread cutting cycle needs a threading tool, like every other threading path here.
+{
+    var sim = new LatheSimulator();
+    var alarms = RunFull(sim, new GCodeParser().Parse("G21\nT0101\nG00 X30 Z2\nG92 X28 Z-20 F1.5\nM30\n"), out _);
+    Console.WriteLine("[60] G92 thread cutting cycle rejects a non-threading tool");
+    Check("alarm 85 raised for the OdTurning tool", alarms.Exists(a => a.Number == 85));
+
+    var sim2 = new LatheSimulator();
+    var alarms2 = RunFull(sim2, new GCodeParser().Parse("G21\nT0404\nG00 X30 Z2\nG92 X28 Z-20 F1.5\nM30\n"), out _);
+    Check("no alarms with T0404 (threading)", alarms2.Count == 0);
+    Check("returns to the start point", Math.Abs(sim2.X - 30) < 0.01 && Math.Abs(sim2.Z - 2) < 0.01);
+}
+
+// 61. Unknown codes now alarm instead of being silently ignored, which is what a real control does
+// (P/S 010). This is the check that keeps the simulator honest about what it actually supports.
+{
+    var sim = new LatheSimulator();
+    var alarms = RunFull(sim, new GCodeParser().Parse("G21\nT0101\nG73\nM30\n"), out _);
+    Console.WriteLine("[61] Unsupported codes raise an improper-G-code alarm");
+    Check("unsupported G73 alarms", alarms.Exists(a => a.Number == 10));
+
+    var sim2 = new LatheSimulator();
+    var alarms2 = RunFull(sim2, new GCodeParser().Parse("G21\nT0101\nM63\nM30\n"), out _);
+    Check("unsupported M63 alarms", alarms2.Exists(a => a.Number == 10));
+
+    // ...but the inert modal codes a real control carries must NOT alarm.
+    var sim3 = new LatheSimulator();
+    var alarms3 = RunFull(sim3, new GCodeParser().Parse("G21\nG18\nG49\nG64\nG22\nG25\nG69\nT0101\nM30\n"), out _);
+    Check("accepted-but-inert codes (G18/G49/G64/G22/G25/G69) do not alarm", alarms3.Count == 0);
+}
+
+// 62. Decimal-suffixed codes are distinct codes, not variants of their integer part. Before the
+// parser kept them separately, G50.1 truncated to G50 (spindle clamp) and G40.1 to G40 (comp
+// cancel) - silently doing the wrong thing rather than nothing.
+{
+    var sim = new LatheSimulator();
+    var alarms = RunFull(sim, new GCodeParser().Parse("G21\nT0101\nG13.1\nG50.1\nG40.1\nG80.4\nG69.1\nM30\n"), out _);
+    Console.WriteLine("[62] Decimal G-codes are parsed as distinct codes and accepted");
+    Check("no alarms for the real machine's inert decimal codes", alarms.Count == 0);
+
+    // G50.1 must not have been mistaken for G50, which would have clamped the spindle.
+    Check("G50.1 did not clamp max spindle speed the way G50 S would", sim.Modal.MaxCssRpm == null);
+
+    // G41 then G40.1 - comp must still be active, because G40.1 is not G40.
+    var sim2 = new LatheSimulator();
+    RunFull(sim2, new GCodeParser().Parse("G21\nT0101\nG41\nG40.1\nM30\n"), out _);
+    Check("G40.1 did not cancel cutter compensation the way G40 would", sim2.Modal.Comp == CutterComp.Left);
+
+    var sim3 = new LatheSimulator();
+    var alarms3 = RunFull(sim3, new GCodeParser().Parse("G21\nT0101\nG77.3\nM30\n"), out _);
+    Check("an unknown decimal code still alarms", alarms3.Exists(a => a.Number == 10));
+}
+
+// 63. M02 ends the program like M30 (the difference on a real control is only the rewind), and the
+// inferred auxiliary M-codes are accepted rather than alarming.
+{
+    var sim = new LatheSimulator();
+    var blocks = new GCodeParser().Parse("G21\nT0101\nG00 X50 Z2\nM02\nG00 X10 Z10\n");
+    var result = sim.RunProgram(blocks);
+    Console.WriteLine("[63] M02 ends the program; auxiliary M-codes are accepted");
+    Check("program reported as ended", result.ProgramEnded);
+    Check("the block after M02 never ran", Math.Abs(sim.X - 50) < 0.01 && Math.Abs(sim.Z - 2) < 0.01);
+
+    var sim2 = new LatheSimulator();
+    var alarms2 = RunFull(sim2, new GCodeParser().Parse("G21\nT0101\nM10\nM11\nM19\nM50\nM51\nM30\n"), out _);
+    Check("inferred auxiliary M-codes do not alarm", alarms2.Count == 0);
+}
+
+// 64. G28 honours an intermediate point when the block gives one, instead of always going straight
+// to the reference position.
+{
+    var sim = new LatheSimulator();
+    // Bore first so the centreline is reachable without ploughing through solid stock.
+    var program = "G21\nT0303\nG0 X10 Z2\nG1 X20 Z2 F0.1\nG1 Z-30 F0.1\nG0 X10 Z2\nG28 X40 Z5\nM30\n";
+    var alarms = RunFull(sim, new GCodeParser().Parse(program), out var warnings);
+    Console.WriteLine("[64] G28 routes via its intermediate point");
+    Check("no alarms", alarms.Count == 0);
+    Check("ends at the reference position X0 Z0", Math.Abs(sim.X) < 0.01 && Math.Abs(sim.Z) < 0.01);
+    // The intermediate point should appear in the toolpath before the final home move.
+    var viaIndex = sim.ToolPath.FindIndex(p => Math.Abs(p.X - 40) < 0.01 && Math.Abs(p.Z - 5) < 0.01);
+    Check("the intermediate point X40 Z5 was actually visited", viaIndex >= 0);
 }
 
 Console.WriteLine();

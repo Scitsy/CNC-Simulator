@@ -253,8 +253,13 @@ namespace FanucSimulator
                 if (isTopLevel && toExecute.Commands.Any(c => c.Type == 'M' && c.Code == 0))
                     return (BlockRangeExit.Paused, i + 1);
 
+                // M02 and M30 both end the program; on a real control the difference is only that
+                // M30 rewinds the cursor to the top, which is what the 0 vs i+1 index expresses.
                 if (isTopLevel && toExecute.Commands.Any(c => c.Type == 'M' && c.Code == 30))
                     return (BlockRangeExit.ProgramEnded, 0);
+
+                if (isTopLevel && toExecute.Commands.Any(c => c.Type == 'M' && c.Code == 2))
+                    return (BlockRangeExit.ProgramEnded, i + 1);
 
                 i++;
             }
@@ -268,6 +273,9 @@ namespace FanucSimulator
         {
             foreach (var (_, code) in block.Commands.Where(c => c.Type == 'G'))
                 ApplyGCode(code, block);
+
+            foreach (var extended in block.ExtendedCodes)
+                ApplyExtendedCode(extended);
 
             // A T-word indexes the turret and selects its offset by itself on a real lathe - M06
             // is often omitted entirely (unlike a machining center's automatic tool changer, where
@@ -286,6 +294,15 @@ namespace FanucSimulator
 
             if (block.Commands.Any(c => c.Type == 'G' && c.Code == 28))
             {
+                // G28 goes to the reference position via an optional intermediate point. A block
+                // giving X/Z (or U/W) rapids there first, which is how programs clear a fixture
+                // before homing; a bare G28 goes straight home.
+                var (viaX, viaZ, hasVia) = ResolveTargetXZ(X, Z, block);
+                if (hasVia)
+                {
+                    TryMoveTo(viaX, viaZ, rapid: true);
+                    Messages.Add($"G28: Via intermediate point X{viaX:F3} Z{viaZ:F3}");
+                }
                 MoveTo(0, 0, rapid: true);
                 Messages.Add("G28: Return to reference position");
                 return;
@@ -298,6 +315,26 @@ namespace FanucSimulator
                 if (block.Params.TryGetValue("Z", out var presetZ)) Z = ToMm(presetZ);
                 Messages.Add($"G50: Coordinate preset X{X:F2} Z{Z:F2}");
                 return;
+            }
+
+            if (block.Commands.Any(c => c.Type == 'G' && (c.Code == 32 || c.Code == 33)))
+            {
+                ExecuteSingleThread(block);
+                return;
+            }
+
+            // A modal single cycle (G90/G92/G94) swallows any block that carries coordinates while
+            // it's armed - that's what "modal" means here: repeating the cycle at a new depth needs
+            // only the changed address, not the G-code again. Checked before ordinary motion so an
+            // armed cycle never falls through and gets executed as a plain move.
+            if (Modal.Cycle != CannedCycle.None)
+            {
+                var (_, _, cycleHasMotion) = ResolveTargetXZ(X, Z, block);
+                if (cycleHasMotion)
+                {
+                    ExecuteSingleCycle(block);
+                    return;
+                }
             }
 
             if (Modal.Motion == MotionMode.ArcCw || Modal.Motion == MotionMode.ArcCcw)
@@ -362,13 +399,28 @@ namespace FanucSimulator
                     Modal.ActiveWorkOffset = code;
                     Messages.Add($"G{code}: Work offset selected");
                     break;
-                case 90:
-                    Modal.Position = PositionMode.Absolute;
-                    Messages.Add("G90: Absolute positioning");
+                case 80:
+                    // Cancels the modal single cycle (G90/G92/G94). The G70-G76 multiple repetitive
+                    // cycles aren't modal and are unaffected - they fire once per trigger block.
+                    Modal.Cycle = CannedCycle.None;
+                    ResetSingleCycleModals();
+                    Messages.Add("G80: Canned cycle cancel");
                     break;
-                case 91:
-                    Modal.Position = PositionMode.Incremental;
-                    Messages.Add("G91: Incremental positioning");
+                // G90/G92/G94 are the system-A single canned cycles. They arm the modal group here;
+                // the cycle itself runs from ExecuteBlock (see ExecuteSingleCycle) whenever a block
+                // carries one of them or, being modal, supplies fresh coordinates while armed.
+                // Switching between them clears the remembered coordinates - they aren't shared.
+                case 90:
+                    if (Modal.Cycle != CannedCycle.Turning) ResetSingleCycleModals();
+                    Modal.Cycle = CannedCycle.Turning;
+                    break;
+                case 92:
+                    if (Modal.Cycle != CannedCycle.Threading) ResetSingleCycleModals();
+                    Modal.Cycle = CannedCycle.Threading;
+                    break;
+                case 94:
+                    if (Modal.Cycle != CannedCycle.Facing) ResetSingleCycleModals();
+                    Modal.Cycle = CannedCycle.Facing;
                     break;
                 case 96:
                     Modal.Spindle = SpindleMode.ConstantSurfaceSpeed;
@@ -391,7 +443,57 @@ namespace FanucSimulator
                     Modal.Feed = FeedMode.PerRevolution;
                     Messages.Add("G99: Feed per revolution");
                     break;
+                default:
+                    if (!AcceptedInertGCodes.Contains(code))
+                        Alarms.Add(new Alarm(10, $"G{code:D2}: Improper G-code - not supported by this control"));
+                    break;
             }
+        }
+
+        // Codes a real 0i-TF accepts and carries as modal state, but which have no effect on a
+        // 2-axis turning simulation - they are the "off"/default member of a modal group whose
+        // active member needs an axis or feature this engine doesn't model (C axis, tool length
+        // compensation, polar/cylindrical interpolation, stroke checking).
+        //
+        // They are listed rather than silently ignored for a specific reason: without this set, the
+        // strict default case above would alarm on perfectly valid programs. Accepting them is
+        // correct; pretending they *do* something would not be. Nothing here changes machine state.
+        private static readonly HashSet<int> AcceptedInertGCodes = new()
+        {
+            7,   // cylindrical interpolation cancel (needs C axis)
+            17,  // XY plane select - meaningless on a 2-axis lathe but legal
+            18,  // ZX plane select - the lathe default
+            19,  // YZ plane select
+            22,  // stored stroke check on
+            23,  // stored stroke check off
+            25,  // spindle speed fluctuation detection off
+            26,  // spindle speed fluctuation detection on
+            49,  // tool length compensation cancel
+            64,  // cutting mode (vs G61 exact stop) - no servo model to differentiate
+            61,  // exact stop mode
+            15,  // polar coordinate command cancel
+            16,  // polar coordinate command (needs C axis)
+            69,  // coordinate rotation cancel
+        };
+
+        // Same idea for the decimal-suffixed codes the parser keeps in Block.ExtendedCodes. All of
+        // these are cancel states shown on the reference machine's modal block.
+        private static readonly HashSet<string> AcceptedInertExtendedCodes = new()
+        {
+            "G5.5", "G05.5",   // high-speed cycle machining cancel
+            "G12.1", "G13.1",  // polar coordinate interpolation on/cancel (needs C axis)
+            "G40.1", "G41.1", "G42.1", // normal direction control (needs C axis)
+            "G50.1", "G51.1",  // programmable mirror image cancel/on
+            "G50.2", "G51.2",  // polygon turning cancel/on
+            "G69.1", "G68.1",  // balanced cutting cancel/on
+            "G80.4", "G81.4",  // electronic gear box cancel/on
+            "G80.5", "G81.5",
+        };
+
+        private void ApplyExtendedCode(string code)
+        {
+            if (!AcceptedInertExtendedCodes.Contains(code))
+                Alarms.Add(new Alarm(10, $"{code}: Improper G-code - not supported by this control"));
         }
 
         private void ApplyMCode(int code, GCodeParser.Block block)
@@ -429,13 +531,56 @@ namespace FanucSimulator
                     CoolantOn = false;
                     Messages.Add("M09: Coolant off");
                     break;
+                case 2:
+                    // Program end without rewind. RunBlockRange ends the run for both M02 and M30;
+                    // the difference is only that M30 returns the cursor to the top.
+                    Messages.Add("M02: Program end");
+                    break;
                 case 30:
                     Messages.Add("M30: Program end, rewind");
                     break;
+                case 19:
+                    Messages.Add("M19: Spindle orient");
+                    break;
+                case 98:
+                    break; // subprogram call is dispatched by RunBlockRange, which logs it there
                 case 99:
-                    Messages.Add("M99: Return from subprogram");
+                    break; // subprogram return likewise - logging here too would double up
+                default:
+                    if (!IsAcceptedAuxiliaryMCode(code))
+                        Alarms.Add(new Alarm(10, $"M{code:D2}: Improper M-code - not supported by this control"));
                     break;
             }
+        }
+
+        // Auxiliary M-codes are assigned by the machine builder, not by FANUC, so a control accepts
+        // whatever its own ladder implements. These are the ones inferred from the reference
+        // machine's operator panel (chuck, tailstock, wash gun and so on).
+        //
+        // *** THESE NUMBERS ARE EDUCATED GUESSES, NOT VERIFIED AGAINST THE REAL MACHINE. ***
+        // They were chosen from common lathe conventions because the panel shows the *functions*
+        // but not their codes. Replacing them with the real table from the machine's manual is a
+        // one-line edit here - nothing else in the engine hardcodes an auxiliary number.
+        private static readonly Dictionary<int, string> AuxiliaryMCodes = new()
+        {
+            [10] = "Chuck clamp",
+            [11] = "Chuck unclamp",
+            [12] = "Tailstock quill advance",
+            [13] = "Tailstock quill retract",
+            [21] = "Parts catcher out",
+            [22] = "Parts catcher in",
+            [50] = "Wash gun on",
+            [51] = "Wash gun off",
+            [52] = "Chip conveyor on",
+            [53] = "Chip conveyor off",
+        };
+
+        private bool IsAcceptedAuxiliaryMCode(int code)
+        {
+            if (!AuxiliaryMCodes.TryGetValue(code, out var description))
+                return false;
+            Messages.Add($"M{code:D2}: {description}");
+            return true;
         }
 
         private void ApplySpindleSpeedCommand(GCodeParser.Block block)
@@ -502,10 +647,13 @@ namespace FanucSimulator
                 Messages.Add("G04: Dwell");
         }
 
-        // Resolves a block's target X/Z from X/Z/U/W params (respecting G90/G91 and the U/W-always-
-        // incremental rule), without moving or alarm-checking. Takes an explicit cursor rather than
-        // reading X/Z directly so it can also be used as a dry-run (see ExtractContour) that doesn't
-        // touch the simulator's real position.
+        // Resolves a block's target X/Z from X/Z/U/W params, without moving or alarm-checking. Takes
+        // an explicit cursor rather than reading X/Z directly so it can also be used as a dry-run
+        // (see ExtractContour) that doesn't touch the simulator's real position.
+        //
+        // G-code system A: X/Z are absolute and U/W are incremental, always - there is no G90/G91
+        // modal to consult. Where a block gives both for one axis (e.g. X and U), the incremental
+        // address wins, matching how a real control resolves the conflict.
         private (double TargetX, double TargetZ, bool HasMotion) ResolveTargetXZ(double fromX, double fromZ, GCodeParser.Block block)
         {
             var hasX = block.Params.ContainsKey("X");
@@ -522,12 +670,12 @@ namespace FanucSimulator
             if (hasU)
                 targetX = fromX + ToMm(block.Params["U"]);
             else if (hasX)
-                targetX = Modal.Position == PositionMode.Incremental ? fromX + ToMm(block.Params["X"]) : ToMm(block.Params["X"]);
+                targetX = ToMm(block.Params["X"]);
 
             if (hasW)
                 targetZ = fromZ + ToMm(block.Params["W"]);
             else if (hasZ)
-                targetZ = Modal.Position == PositionMode.Incremental ? fromZ + ToMm(block.Params["Z"]) : ToMm(block.Params["Z"]);
+                targetZ = ToMm(block.Params["Z"]);
 
             return (targetX, targetZ, true);
         }

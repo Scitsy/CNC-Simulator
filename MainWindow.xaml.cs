@@ -1057,10 +1057,16 @@ namespace FanucSimulator
 
         private void RefreshAlarmList()
         {
-            // Bound directly to the Alarm objects (Number/Message as separate DataGrid columns) so
-            // alarm numbers line up in a column instead of running together in one string - was a
-            // plain ListBox of a.ToString() before, harder to scan with more than one alarm active.
-            AlarmList.ItemsSource = _sim.Alarms;
+            // Bound to Alarm objects (Number/Message as separate DataGrid columns) so alarm numbers
+            // line up in a column instead of running together in one string.
+            //
+            // .ToList() matters: _sim.Alarms is the same List instance for the whole life of a
+            // LatheSimulator, and a plain List raises no collection-changed notification. Assigning
+            // that same reference back leaves the grid showing whatever it latched onto the first
+            // time, so alarms raised later in a run silently never appear - which is exactly what
+            // happened when a program raised two alarms and only the first was displayed. Handing
+            // WPF a fresh snapshot each refresh forces it to re-read.
+            AlarmList.ItemsSource = _sim.Alarms.ToList();
             StatusAlarmBadge.Visibility = _sim.Alarms.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         }
 
@@ -1195,7 +1201,15 @@ namespace FanucSimulator
             MachZDisplay.Text = AxisLine('Z', machineZ);
 
             ModalMotionDisplay.Text = _sim.Modal.Motion == MotionMode.Rapid ? "G00" : "G01";
-            ModalPositionDisplay.Text = _sim.Modal.Position == PositionMode.Absolute ? "G90" : "G91";
+            // System A has no absolute/incremental modal group; this slot on the real screen carries
+            // the canned-cycle group instead, which is G80 whenever no single cycle is armed.
+            ModalPositionDisplay.Text = _sim.Modal.Cycle switch
+            {
+                CannedCycle.Turning => "G90",
+                CannedCycle.Threading => "G92",
+                CannedCycle.Facing => "G94",
+                _ => "G80",
+            };
             ModalUnitsDisplay.Text = _sim.Modal.Units == UnitsMode.Metric ? "G21" : "G20";
             ModalFeedDisplay.Text = _sim.Modal.Feed == FeedMode.PerRevolution ? "G99" : "G98";
             ModalSpindleDisplay.Text = _sim.Modal.Spindle == SpindleMode.ConstantSurfaceSpeed ? "G96" : "G97";
