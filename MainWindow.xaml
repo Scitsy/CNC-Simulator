@@ -13,31 +13,33 @@
         <SolidColorBrush x:Key="AlarmRed" Color="#ff3b3b"/>
         <SolidColorBrush x:Key="OkGreen" Color="#29d629"/>
 
-        <!-- Light LCD screen theme - the CRT area only, matching the reference photos.
-             ScreenBg/ScreenAltRow/ScreenBorder/ScreenHeader/ScreenValue/ScreenStatLabel/ScreenMuted
-             and PanelButton/DisabledPanelButton/ScreenFieldLabel now live in App.xaml so a
-             secondary window (ToolBuilderWindow) can share them too. -->
-        <SolidColorBrush x:Key="ScreenAxisLabel" Color="#1a8a1a"/>
-        <SolidColorBrush x:Key="ScreenCode" Color="#0a6a6a"/>
+        <!-- Blue CRT screen theme - the screen area only, matching the reference photos of the
+             user's real 0i-TF Plus. ScreenBg/ScreenAltRow/ScreenBorder/ScreenHeader/ScreenValue/
+             ScreenStatLabel/ScreenMuted/SoftKey* and PanelButton/DisabledPanelButton/
+             ScreenFieldLabel live in App.xaml so a secondary window (ToolBuilderWindow) shares them.
+             On the real control the axis letters and the modal G-code block are plain white like
+             everything else on the CRT - no separate accent colours. -->
+        <SolidColorBrush x:Key="ScreenAxisLabel" Color="#ffffff"/>
+        <SolidColorBrush x:Key="ScreenCode" Color="#ffffff"/>
 
         <Style x:Key="SoftKeyButton" TargetType="Button">
-            <Setter Property="Background" Value="{StaticResource ScreenBg}"/>
-            <Setter Property="Foreground" Value="{StaticResource ScreenMuted}"/>
+            <Setter Property="Background" Value="{StaticResource SoftKeyBg}"/>
+            <Setter Property="Foreground" Value="{StaticResource SoftKeyText}"/>
             <Setter Property="Padding" Value="4,3"/>
             <Setter Property="Margin" Value="0,0,2,0"/>
-            <Setter Property="BorderBrush" Value="{StaticResource ScreenBorder}"/>
+            <Setter Property="BorderBrush" Value="#7f96a8"/>
             <Setter Property="FontSize" Value="11"/>
         </Style>
         <Style x:Key="ActiveSoftKeyButton" TargetType="Button" BasedOn="{StaticResource SoftKeyButton}">
             <Setter Property="Background" Value="White"/>
-            <Setter Property="Foreground" Value="{StaticResource ScreenValue}"/>
+            <Setter Property="Foreground" Value="{StaticResource SoftKeyText}"/>
             <Setter Property="FontWeight" Value="Bold"/>
-            <Setter Property="BorderBrush" Value="{StaticResource ScreenValue}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource SoftKeyText}"/>
             <Setter Property="BorderThickness" Value="1.5"/>
         </Style>
         <Style x:Key="DisabledSoftKeyButton" TargetType="Button" BasedOn="{StaticResource SoftKeyButton}">
             <Setter Property="IsEnabled" Value="False"/>
-            <Setter Property="Foreground" Value="#9a9d94"/>
+            <Setter Property="Foreground" Value="{StaticResource SoftKeyDisabledText}"/>
         </Style>
         <Style x:Key="KeypadKey" TargetType="Button">
             <Setter Property="Background" Value="#2a2a2a"/>
@@ -173,8 +175,8 @@
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Grid.Column="0" x:Name="PosHeaderDisplay" Text="POSITION(ABS)" Foreground="{StaticResource ScreenHeader}" FontWeight="Bold"/>
-                                <TextBlock Grid.Column="1" x:Name="ProgramIdDisplay" Text="T00" Foreground="{StaticResource ScreenHeader}"/>
+                                <TextBlock Grid.Column="0" x:Name="PosHeaderDisplay" Text="POSITION(ABS)" Foreground="{StaticResource ScreenHeader}" FontWeight="Bold" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="1" x:Name="ProgramIdDisplay" Text="O0000 N00000" Foreground="{StaticResource ScreenValue}" FontSize="19" VerticalAlignment="Center"/>
                             </Grid>
 
                             <!-- ABS sub-view: simple large X/Z, matching the close reference photo -->
@@ -197,46 +199,120 @@
                                 </Grid>
                             </StackPanel>
 
-                            <!-- ALL sub-view: ABSOLUTE/MACHINE/DISTANCE-TO-GO + modal grid -->
+                            <!-- ALL sub-view: laid out to match the real 0i-TF Plus POS(ALL) screen -
+                                 a 2x2 block of ruled position boxes (RELATIVE/ABSOLUTE over MACHINE/
+                                 DISTANCE TO GO) with the modal G-code block ruled off beneath them,
+                                 and a right-hand column carrying the big feed readout, the machine
+                                 counters, and a live preview of the loaded program. -->
                             <StackPanel x:Name="PosAllView" Visibility="Collapsed" Margin="0,0,0,10">
-                                <Grid Margin="0,0,0,10">
+                                <Grid>
                                     <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="1.15*"/>
                                         <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
-                                    <StackPanel Grid.Column="0">
-                                        <TextBlock Text="ABSOLUTE" Style="{StaticResource ScreenFieldLabel}"/>
-                                        <TextBlock x:Name="AbsXDisplay" Text="X 0.000" FontSize="18" FontWeight="Bold" Foreground="{StaticResource ScreenValue}"/>
-                                        <TextBlock x:Name="AbsZDisplay" Text="Z 0.000" FontSize="18" FontWeight="Bold" Foreground="{StaticResource ScreenValue}"/>
+
+                                    <!-- Left: position boxes + modal block -->
+                                    <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                                        <UniformGrid Rows="2" Columns="2">
+                                            <Border BorderBrush="{StaticResource ScreenBorder}" BorderThickness="1" Padding="6,4" Margin="0,0,-1,-1">
+                                                <StackPanel>
+                                                    <TextBlock Text="RELATIVE" Foreground="{StaticResource ScreenStatLabel}" FontSize="11" HorizontalAlignment="Center"/>
+                                                    <TextBlock x:Name="RelUDisplay" Text="U      0.000" FontSize="15" Foreground="{StaticResource ScreenValue}" Margin="0,3,0,0"/>
+                                                    <TextBlock x:Name="RelWDisplay" Text="W      0.000" FontSize="15" Foreground="{StaticResource ScreenValue}"/>
+                                                </StackPanel>
+                                            </Border>
+                                            <Border BorderBrush="{StaticResource ScreenBorder}" BorderThickness="1" Padding="6,4" Margin="0,0,0,-1">
+                                                <StackPanel>
+                                                    <TextBlock Text="ABSOLUTE" Foreground="{StaticResource ScreenStatLabel}" FontSize="11" HorizontalAlignment="Center"/>
+                                                    <TextBlock x:Name="AbsXDisplay" Text="X      0.000" FontSize="15" Foreground="{StaticResource ScreenValue}" Margin="0,3,0,0"/>
+                                                    <TextBlock x:Name="AbsZDisplay" Text="Z      0.000" FontSize="15" Foreground="{StaticResource ScreenValue}"/>
+                                                </StackPanel>
+                                            </Border>
+                                            <Border BorderBrush="{StaticResource ScreenBorder}" BorderThickness="1" Padding="6,4" Margin="0,0,-1,0">
+                                                <StackPanel>
+                                                    <TextBlock Text="MACHINE" Foreground="{StaticResource ScreenStatLabel}" FontSize="11" HorizontalAlignment="Center"/>
+                                                    <TextBlock x:Name="MachXDisplay" Text="X      0.000" FontSize="15" Foreground="{StaticResource ScreenValue}" Margin="0,3,0,0"/>
+                                                    <TextBlock x:Name="MachZDisplay" Text="Z      0.000" FontSize="15" Foreground="{StaticResource ScreenValue}"/>
+                                                </StackPanel>
+                                            </Border>
+                                            <Border BorderBrush="{StaticResource ScreenBorder}" BorderThickness="1" Padding="6,4">
+                                                <StackPanel>
+                                                    <TextBlock Text="DISTANCE TO GO" Foreground="{StaticResource ScreenStatLabel}" FontSize="11" HorizontalAlignment="Center"/>
+                                                    <TextBlock x:Name="DistXDisplay" Text="X      0.000" FontSize="15" Foreground="{StaticResource ScreenValue}" Margin="0,3,0,0"/>
+                                                    <TextBlock x:Name="DistZDisplay" Text="Z      0.000" FontSize="15" Foreground="{StaticResource ScreenValue}"/>
+                                                </StackPanel>
+                                            </Border>
+                                        </UniformGrid>
+
+                                        <Border BorderBrush="{StaticResource ScreenBorder}" BorderThickness="1" Padding="6,5" Margin="0,-1,0,0">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <UniformGrid Grid.Column="0" Rows="3" Columns="3">
+                                                    <TextBlock x:Name="ModalMotionDisplay" Text="G00" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalPositionDisplay" Text="G90" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalUnitsDisplay" Text="G21" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalFeedDisplay" Text="G99" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalSpindleDisplay" Text="G97" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalCompDisplay" Text="G40" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalWorkOffsetDisplay" Text="G54" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalToolDisplay" Text="T00" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalCoolantDisplay" Text="COOLANT OFF" Style="{StaticResource ModalCode}"/>
+                                                </UniformGrid>
+                                                <TextBlock Grid.Column="1" x:Name="ModalMCodeDisplay" Text="M   30" FontSize="13"
+                                                           Foreground="{StaticResource ScreenCode}" VerticalAlignment="Top" Margin="8,4,0,0"/>
+                                            </Grid>
+                                        </Border>
                                     </StackPanel>
+
+                                    <!-- Right: feed readout, machine counters, program preview -->
                                     <StackPanel Grid.Column="1">
-                                        <TextBlock Text="MACHINE" Style="{StaticResource ScreenFieldLabel}"/>
-                                        <TextBlock x:Name="MachXDisplay" Text="X 0.000" FontSize="13" Foreground="{StaticResource ScreenMuted}"/>
-                                        <TextBlock x:Name="MachZDisplay" Text="Z 0.000" FontSize="13" Foreground="{StaticResource ScreenMuted}"/>
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="2">
-                                        <TextBlock Text="DISTANCE TO GO" Style="{StaticResource ScreenFieldLabel}"/>
-                                        <TextBlock Text="X 0.000" FontSize="13" Foreground="{StaticResource ScreenMuted}"/>
-                                        <TextBlock Text="Z 0.000" FontSize="13" Foreground="{StaticResource ScreenMuted}"/>
+                                        <Grid Margin="0,0,0,6">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="F" FontSize="20" Foreground="{StaticResource ScreenValue}" VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="1" x:Name="AllFeedDisplay" Text="0.00 mm/rev" FontSize="20" FontWeight="Bold"
+                                                       Foreground="{StaticResource ScreenValue}" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                        </Grid>
+                                        <Grid Margin="0,0,0,2">
+                                            <TextBlock Text="PARTS COUNT" FontSize="11" Foreground="{StaticResource ScreenStatLabel}"/>
+                                            <TextBlock x:Name="AllPartCountDisplay" Text="0" FontSize="11" Foreground="{StaticResource ScreenValue}" HorizontalAlignment="Right"/>
+                                        </Grid>
+                                        <Grid Margin="0,0,0,2">
+                                            <TextBlock Text="RUN TIME" FontSize="11" Foreground="{StaticResource ScreenStatLabel}"/>
+                                            <TextBlock x:Name="AllRunTimeDisplay" Text="0H 0M 0S" FontSize="11" Foreground="{StaticResource ScreenValue}" HorizontalAlignment="Right"/>
+                                        </Grid>
+                                        <Grid Margin="0,0,0,6">
+                                            <TextBlock Text="CYCLE TIME" FontSize="11" Foreground="{StaticResource ScreenStatLabel}"/>
+                                            <TextBlock x:Name="AllCycleTimeDisplay" Text="0H 0M 0S" FontSize="11" Foreground="{StaticResource ScreenValue}" HorizontalAlignment="Right"/>
+                                        </Grid>
+
+                                        <TextBlock Text="PROGRAM" FontSize="11" Foreground="{StaticResource ScreenStatLabel}" HorizontalAlignment="Center" Margin="0,0,0,3"/>
+                                        <Border BorderBrush="{StaticResource ScreenBorder}" BorderThickness="1" Height="128" Padding="5,4">
+                                            <TextBlock x:Name="AllProgramPreview" FontSize="12" Foreground="{StaticResource ScreenValue}"
+                                                       FontFamily="Courier New" TextTrimming="CharacterEllipsis"/>
+                                        </Border>
                                     </StackPanel>
                                 </Grid>
 
-                                <UniformGrid Rows="3" Columns="3">
-                                    <TextBlock x:Name="ModalMotionDisplay" Text="G00" Style="{StaticResource ModalCode}"/>
-                                    <TextBlock x:Name="ModalPositionDisplay" Text="G90" Style="{StaticResource ModalCode}"/>
-                                    <TextBlock x:Name="ModalUnitsDisplay" Text="G21" Style="{StaticResource ModalCode}"/>
-                                    <TextBlock x:Name="ModalFeedDisplay" Text="G99" Style="{StaticResource ModalCode}"/>
-                                    <TextBlock x:Name="ModalSpindleDisplay" Text="G97" Style="{StaticResource ModalCode}"/>
-                                    <TextBlock x:Name="ModalCompDisplay" Text="G40" Style="{StaticResource ModalCode}"/>
-                                    <TextBlock x:Name="ModalWorkOffsetDisplay" Text="G54" Style="{StaticResource ModalCode}"/>
-                                    <TextBlock x:Name="ModalToolDisplay" Text="T00" Style="{StaticResource ModalCode}"/>
-                                    <TextBlock x:Name="ModalCoolantDisplay" Text="COOLANT OFF" Style="{StaticResource ModalCode}"/>
-                                </UniformGrid>
+                                <!-- Spindle/limit strip along the screen's bottom edge, as on the real control -->
+                                <Grid Margin="0,6,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" x:Name="AllSpindleDisplay" Text="S        0" FontSize="12" Foreground="{StaticResource ScreenValue}"/>
+                                    <TextBlock Grid.Column="1" Text="SLM     0" FontSize="12" Foreground="{StaticResource ScreenValue}"/>
+                                </Grid>
                             </StackPanel>
 
-                            <!-- Stats block: shared across sub-views, like a real control's machine stats -->
-                            <Grid Margin="0,0,0,8">
+                            <!-- Machine stats, ABS sub-view only - the ALL sub-view above carries its
+                                 own counters in the right-hand column, laid out as on the real control. -->
+                            <Grid x:Name="PosAbsStats" Margin="0,0,0,8">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
@@ -307,7 +383,8 @@
                                     </StackPanel>
                                 </Grid>
 
-                                <TextBox x:Name="GCodeInput" Grid.Row="1" Padding="5" Background="#d8dcd2" Foreground="{StaticResource ScreenValue}"
+                                <TextBox x:Name="GCodeInput" Grid.Row="1" Padding="5" Background="{StaticResource ScreenAltRow}" Foreground="{StaticResource ScreenValue}"
+                                        BorderBrush="{StaticResource ScreenBorder}" CaretBrush="White" SelectionBrush="#a8e8ff"
                                         TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
                                         AcceptsReturn="True" AcceptsTab="True" GotFocus="Input_GotFocus" TextChanged="GCodeInput_TextChanged"
                                         Text="G21&#xD;&#xA;G54&#xD;&#xA;T0101 M6&#xD;&#xA;G97 S1200 M3&#xD;&#xA;G0 X50 Z100&#xD;&#xA;G99 G1 Z50 F0.2&#xD;&#xA;G4 P300&#xD;&#xA;M8&#xD;&#xA;G0 Z100&#xD;&#xA;M9&#xD;&#xA;G28&#xD;&#xA;M5&#xD;&#xA;M30"/>
@@ -347,7 +424,8 @@
                                         <RowDefinition Height="*"/>
                                     </Grid.RowDefinitions>
                                     <TextBlock Grid.Row="0" x:Name="BgEditLeftHeader" Foreground="{StaticResource ScreenHeader}" FontWeight="Bold" Margin="0,0,0,4"/>
-                                    <TextBox x:Name="BgEditLeftBox" Grid.Row="1" Padding="5" Background="#d8dcd2" Foreground="{StaticResource ScreenValue}"
+                                    <TextBox x:Name="BgEditLeftBox" Grid.Row="1" Padding="5" Background="{StaticResource ScreenAltRow}" Foreground="{StaticResource ScreenValue}"
+                                             CaretBrush="White" SelectionBrush="#a8e8ff"
                                              TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" AcceptsReturn="True" AcceptsTab="True"
                                              FontFamily="Courier New" BorderBrush="{StaticResource ScreenHeader}" BorderThickness="2"
                                              GotFocus="BgEditLeftBox_GotFocus" TextChanged="BgEditLeftBox_TextChanged"/>
@@ -359,7 +437,8 @@
                                         <RowDefinition Height="*"/>
                                     </Grid.RowDefinitions>
                                     <TextBlock Grid.Row="0" x:Name="BgEditRightHeader" Foreground="{StaticResource ScreenHeader}" FontWeight="Bold" Margin="0,0,0,4"/>
-                                    <TextBox x:Name="BgEditRightBox" Grid.Row="1" Padding="5" Background="#d8dcd2" Foreground="{StaticResource ScreenValue}"
+                                    <TextBox x:Name="BgEditRightBox" Grid.Row="1" Padding="5" Background="{StaticResource ScreenAltRow}" Foreground="{StaticResource ScreenValue}"
+                                             CaretBrush="White" SelectionBrush="#a8e8ff"
                                              TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" AcceptsReturn="True" AcceptsTab="True"
                                              FontFamily="Courier New" BorderBrush="{StaticResource ScreenBorder}" BorderThickness="1"
                                              GotFocus="BgEditRightBox_GotFocus" TextChanged="BgEditRightBox_TextChanged"/>
@@ -500,7 +579,7 @@
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-                        <Border Grid.Column="0" Background="#d8d8d8" Padding="4,3">
+                        <Border Grid.Column="0" Background="White" BorderBrush="{StaticResource ScreenBorder}" BorderThickness="1" Padding="4,3">
                             <DockPanel>
                                 <TextBlock Text="A&gt;" Foreground="Black" FontWeight="Bold" DockPanel.Dock="Left" Margin="0,0,4,0"/>
                                 <TextBox x:Name="CommandLineInput" Background="Transparent" Foreground="Black" BorderThickness="0"

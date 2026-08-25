@@ -3,16 +3,26 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              StartupUri="MainWindow.xaml">
     <Application.Resources>
-        <!-- Shared across MainWindow and any secondary window (e.g. ToolBuilderWindow) - the
-             light LCD screen theme + panel-button chrome. Everything else stays local to
-             MainWindow.xaml's own Window.Resources since only MainWindow uses it. -->
-        <SolidColorBrush x:Key="ScreenBg" Color="#c8ccc4"/>
-        <SolidColorBrush x:Key="ScreenAltRow" Color="#bcc0b8"/>
-        <SolidColorBrush x:Key="ScreenBorder" Color="#8a8f86"/>
-        <SolidColorBrush x:Key="ScreenHeader" Color="#c0208c"/>
-        <SolidColorBrush x:Key="ScreenValue" Color="#141414"/>
-        <SolidColorBrush x:Key="ScreenStatLabel" Color="#1a50a8"/>
-        <SolidColorBrush x:Key="ScreenMuted" Color="#5a5f58"/>
+        <!-- Shared across MainWindow and any secondary window (e.g. ToolBuilderWindow) - the CRT
+             screen theme + panel-button chrome. Everything else stays local to MainWindow.xaml's
+             own Window.Resources since only MainWindow uses it.
+             Retheme note: this was a light grey-olive LCD palette until photos of the user's actual
+             0i-TF Plus showed the real thing is the classic FANUC blue CRT - near-white text on a
+             medium steel blue, with lighter blue rules boxing each section off. Every screen (POS/
+             PROGRAM/OFFSET/ALARM/MACRO/HELP + Tool Builder) recolors from these seven brushes. -->
+        <SolidColorBrush x:Key="ScreenBg" Color="#4e7191"/>
+        <SolidColorBrush x:Key="ScreenAltRow" Color="#456986"/>
+        <SolidColorBrush x:Key="ScreenBorder" Color="#93b8d4"/>
+        <SolidColorBrush x:Key="ScreenHeader" Color="#a8e8ff"/>
+        <SolidColorBrush x:Key="ScreenValue" Color="#ffffff"/>
+        <SolidColorBrush x:Key="ScreenStatLabel" Color="#dceaf5"/>
+        <SolidColorBrush x:Key="ScreenMuted" Color="#b4d0e4"/>
+
+        <!-- Soft keys sit below the CRT and read as light physical keys against it, not as more
+             screen - light blue-grey face, dark navy legend, matching the reference photos. -->
+        <SolidColorBrush x:Key="SoftKeyBg" Color="#b9cddd"/>
+        <SolidColorBrush x:Key="SoftKeyText" Color="#123049"/>
+        <SolidColorBrush x:Key="SoftKeyDisabledText" Color="#7e93a5"/>
 
         <Style x:Key="PanelButton" TargetType="Button">
             <Setter Property="Background" Value="#1a1a1a"/>

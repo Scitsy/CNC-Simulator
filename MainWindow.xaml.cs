@@ -1121,9 +1121,13 @@ namespace FanucSimulator
                 HelpContent.Children.Add(MakeHelpEntry(tip.Title, tip.Body));
         }
 
-        private static readonly SolidColorBrush HelpHeaderBrush = new(Color.FromRgb(0xa0, 0x50, 0x00));
-        private static readonly SolidColorBrush HelpTitleBrush = new(Color.FromRgb(0x1a, 0x8a, 0x1a));
-        private static readonly SolidColorBrush HelpBodyBrush = new(Color.FromRgb(0x2a, 0x2e, 0x28));
+        // HELP text colours have to be picked against the screen background, and these were chosen
+        // back when that was a light grey-olive LCD - near-black body text on the blue CRT the real
+        // machine actually uses would be barely legible. Amber headers / cyan titles / white body
+        // keep the same three-level hierarchy with contrast that works on blue.
+        private static readonly SolidColorBrush HelpHeaderBrush = new(Color.FromRgb(0xff, 0xd2, 0x7f));
+        private static readonly SolidColorBrush HelpTitleBrush = new(Color.FromRgb(0xa8, 0xe8, 0xff));
+        private static readonly SolidColorBrush HelpBodyBrush = new(Color.FromRgb(0xff, 0xff, 0xff));
 
         private static TextBlock MakeHelpHeader(string text) => new()
         {
@@ -1142,18 +1146,53 @@ namespace FanucSimulator
             return panel;
         }
 
+        // POS(ALL)'s ruled boxes column-align their numbers under each other, which only works with
+        // the right-aligned padding a real control's fixed-width screen font gives for free.
+        private static string AxisLine(char axis, double value) => $"{axis} {value,10:F3}";
+
+        // The O-number the real control shows top-right comes from the program itself, not the file
+        // name - so read it back out of the editor text the same way the control would. Falls back to
+        // O0000 for a program that never declared one (perfectly legal, just unnamed in memory).
+        private string CurrentProgramNumber()
+        {
+            var match = System.Text.RegularExpressions.Regex.Match(
+                GCodeInput.Text, @"^\s*O(\d{1,5})", System.Text.RegularExpressions.RegexOptions.Multiline);
+            return match.Success ? $"O{int.Parse(match.Groups[1].Value):D4}" : "O0000";
+        }
+
+        // First few program lines, for POS(ALL)'s program pane. Deliberately no highlighted "current"
+        // line: a real control highlights the block it is executing, but this simulator runs a whole
+        // program to completion inside one Execute click, so there is never a genuine current block
+        // to point at - faking one would just be decoration.
+        private string ProgramPreviewText()
+        {
+            var lines = GCodeInput.Text.Replace("\r\n", "\n").Split('\n');
+            return string.Join(Environment.NewLine, lines.Take(9).Select(l => l.TrimEnd()));
+        }
+
         private void UpdateDisplay()
         {
-            AbsXDisplay.Text = $"X {_sim.X:F3}";
-            AbsZDisplay.Text = $"Z {_sim.Z:F3}";
+            AbsXDisplay.Text = AxisLine('X', _sim.X);
+            AbsZDisplay.Text = AxisLine('Z', _sim.Z);
             AbsXBigDisplay.Text = _sim.X.ToString("F3");
             AbsZBigDisplay.Text = _sim.Z.ToString("F3");
+
+            // No separate relative-counter origin is modelled (a real control lets the operator zero
+            // U/W independently of the work offset), so RELATIVE tracks ABSOLUTE - which is also what
+            // the reference photo of the real machine happens to show.
+            RelUDisplay.Text = AxisLine('U', _sim.X);
+            RelWDisplay.Text = AxisLine('W', _sim.Z);
+
+            // Blocks run to completion within a single RunProgram call, so at rest there is never any
+            // residual commanded motion left to report - always zero, same as the idle real machine.
+            DistXDisplay.Text = AxisLine('X', 0);
+            DistZDisplay.Text = AxisLine('Z', 0);
 
             var workOffset = _sim.Offsets.WorkOffsets.TryGetValue(_sim.Modal.ActiveWorkOffset, out var wo) ? wo : null;
             var machineX = _sim.X + (workOffset?.X ?? 0);
             var machineZ = _sim.Z + (workOffset?.Z ?? 0);
-            MachXDisplay.Text = $"X {machineX:F3}";
-            MachZDisplay.Text = $"Z {machineZ:F3}";
+            MachXDisplay.Text = AxisLine('X', machineX);
+            MachZDisplay.Text = AxisLine('Z', machineZ);
 
             ModalMotionDisplay.Text = _sim.Modal.Motion == MotionMode.Rapid ? "G00" : "G01";
             ModalPositionDisplay.Text = _sim.Modal.Position == PositionMode.Absolute ? "G90" : "G91";
@@ -1163,16 +1202,25 @@ namespace FanucSimulator
             ModalCompDisplay.Text = _sim.Modal.Comp switch { CutterComp.Left => "G41", CutterComp.Right => "G42", _ => "G40" };
             ModalWorkOffsetDisplay.Text = $"G{_sim.Modal.ActiveWorkOffset}";
             ModalToolDisplay.Text = $"T{_sim.CurrentTool:D2}";
-            ModalCoolantDisplay.Text = _sim.CoolantOn ? "COOLANT ON" : "COOLANT OFF";
+            // Coolant belongs in the modal block as its M-code, the way a real control lists it -
+            // spelling out "COOLANT ON/OFF" overflowed the column and isn't what the machine shows.
+            ModalCoolantDisplay.Text = _sim.CoolantOn ? "M08" : "M09";
+
+            // The M field on a real POS screen shows the M-code currently in effect; spindle
+            // direction is the only continuously-held M state this simulator actually tracks.
+            ModalMCodeDisplay.Text = "M   " + _sim.SpindleDir switch { 1 => "03", -1 => "04", _ => "05" };
 
             var feedLabel = _sim.Modal.Feed == FeedMode.PerRevolution ? "mm/rev" : "mm/min";
             FeedDisplay.Text = $"{_sim.FeedRate:F2} {feedLabel}";
+            AllFeedDisplay.Text = $"{_sim.FeedRate:F2} {feedLabel}";
 
             var dirLabel = _sim.SpindleDir switch { 1 => "FWD", -1 => "REV", _ => "STOPPED" };
             var modeLabel = _sim.Modal.Spindle == SpindleMode.ConstantSurfaceSpeed ? "CSS" : "RPM";
             SpindleDisplay.Text = _sim.SpindleDir != 0 ? $"{_sim.SpindleSpeed:F0} RPM ({modeLabel}) {dirLabel}" : "STOPPED";
+            AllSpindleDisplay.Text = $"S {_sim.SpindleSpeed,8:F0}      {dirLabel}";
 
-            ProgramIdDisplay.Text = $"T{_sim.CurrentTool:D2}";
+            ProgramIdDisplay.Text = $"{CurrentProgramNumber()} N00000";
+            AllProgramPreview.Text = ProgramPreviewText();
 
             UpdateStatsDisplay();
             UpdateEmgBadge();
@@ -1185,6 +1233,12 @@ namespace FanucSimulator
             RunTimeDisplay.Text = FormatHms(TimeSpan.FromSeconds(_runSimulatedSeconds));
             CycleTimeDisplay.Text = FormatHms(TimeSpan.FromSeconds(_cycleSimulatedSeconds));
             PartCountDisplay.Text = _partCount.ToString();
+
+            // POS(ALL) carries its own copy of these in the right-hand column (the two sub-views lay
+            // them out completely differently), so both sets are written from the same values here.
+            AllRunTimeDisplay.Text = RunTimeDisplay.Text;
+            AllCycleTimeDisplay.Text = CycleTimeDisplay.Text;
+            AllPartCountDisplay.Text = PartCountDisplay.Text;
         }
 
         private void CoolantToggle_Click(object sender, RoutedEventArgs e)
@@ -1229,6 +1283,7 @@ namespace FanucSimulator
 
             var showAll = view == "ALL";
             PosAbsView.Visibility = showAll ? Visibility.Collapsed : Visibility.Visible;
+            PosAbsStats.Visibility = showAll ? Visibility.Collapsed : Visibility.Visible;
             PosAllView.Visibility = showAll ? Visibility.Visible : Visibility.Collapsed;
             PosHeaderDisplay.Text = showAll ? "POSITION(ALL)" : "POSITION(ABS)";
 
