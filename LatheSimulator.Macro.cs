@@ -38,6 +38,9 @@ namespace FanucSimulator
         // insert a macro call into, and real-world G66 usage is point-to-point patterns (repeated
         // drilling/positioning), not wrapped around a roughing cycle.
         private bool _modalMacroActive = false;
+
+        // The POS screen's modal block shows this group as G66 (armed) or G67 (cancelled).
+        public bool ModalMacroActive => _modalMacroActive;
         private int _modalMacroProgram = 0;
         private int _modalMacroRepeat = 1;
         private double?[] _modalMacroArgs = new double?[34];

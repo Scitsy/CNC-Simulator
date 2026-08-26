@@ -1218,11 +1218,10 @@ namespace FanucSimulator
             AbsXBigDisplay.Text = FormatPos(_sim.X);
             AbsZBigDisplay.Text = FormatPos(_sim.Z);
 
-            // No separate relative-counter origin is modelled (a real control lets the operator zero
-            // U/W independently of the work offset), so RELATIVE tracks ABSOLUTE - which is also what
-            // the reference photo of the real machine happens to show.
-            RelUDisplay.Text = AxisLine('U', _sim.X);
-            RelWDisplay.Text = AxisLine('W', _sim.Z);
+            // RELATIVE measures from its own operator-zeroable origin, so it only matches ABSOLUTE
+            // until someone zeroes it - which is why the reference photo shows the two agreeing.
+            RelUDisplay.Text = AxisLine('U', _sim.RelativeU);
+            RelWDisplay.Text = AxisLine('W', _sim.RelativeW);
 
             // Blocks run to completion within a single RunProgram call, so at rest there is never any
             // residual commanded motion left to report - always zero, same as the idle real machine.
@@ -1235,25 +1234,57 @@ namespace FanucSimulator
             MachXDisplay.Text = AxisLine('X', machineX);
             MachZDisplay.Text = AxisLine('Z', machineZ);
 
-            ModalMotionDisplay.Text = _sim.Modal.Motion == MotionMode.Rapid ? "G00" : "G01";
-            // System A has no absolute/incremental modal group; this slot on the real screen carries
-            // the canned-cycle group instead, which is G80 whenever no single cycle is armed.
-            ModalPositionDisplay.Text = _sim.Modal.Cycle switch
+            // The modal block reproduces the real screen's three code columns plus the address-letter
+            // column. Groups the engine genuinely acts on (motion, cycle, units, feed, spindle, comp,
+            // work offset, tool) read from real state; the rest are groups a 0i-TF carries and shows
+            // but which are inert on a 2-axis turning sim - those still display whatever the program
+            // last commanded rather than a hardcoded constant, so the screen never claims a state the
+            // program didn't ask for.
+            var m = _sim.Modal;
+            ModalMotionDisplay.Text = m.Motion switch
+            {
+                MotionMode.Rapid => "G00",
+                MotionMode.Linear => "G01",
+                MotionMode.ArcCw => "G02",
+                _ => "G03",
+            };
+            // System A has no absolute/incremental group; this slot carries the canned-cycle group,
+            // which is G80 whenever no single cycle is armed.
+            ModalCycleDisplay.Text = m.Cycle switch
             {
                 CannedCycle.Turning => "G90",
                 CannedCycle.Threading => "G92",
                 CannedCycle.Facing => "G94",
                 _ => "G80",
             };
-            ModalUnitsDisplay.Text = _sim.Modal.Units == UnitsMode.Metric ? "G21" : "G20";
-            ModalFeedDisplay.Text = _sim.Modal.Feed == FeedMode.PerRevolution ? "G99" : "G98";
-            ModalSpindleDisplay.Text = _sim.Modal.Spindle == SpindleMode.ConstantSurfaceSpeed ? "G96" : "G97";
-            ModalCompDisplay.Text = _sim.Modal.Comp switch { CutterComp.Left => "G41", CutterComp.Right => "G42", _ => "G40" };
-            ModalWorkOffsetDisplay.Text = $"G{_sim.Modal.ActiveWorkOffset}";
+            ModalUnitsDisplay.Text = m.Units == UnitsMode.Metric ? "G21" : "G20";
+            ModalFeedDisplay.Text = m.Feed == FeedMode.PerRevolution ? "G99" : "G98";
+            ModalSpindleDisplay.Text = m.Spindle == SpindleMode.ConstantSurfaceSpeed ? "G96" : "G97";
+            ModalCompDisplay.Text = m.Comp switch { CutterComp.Left => "G41", CutterComp.Right => "G42", _ => "G40" };
+            ModalWorkOffsetDisplay.Text = $"G{m.ActiveWorkOffset}";
             ModalToolDisplay.Text = $"T{_sim.CurrentTool:D2}";
+            ModalMacroDisplay.Text = _sim.ModalMacroActive ? "G66" : "G67";
+
+            ModalPlaneDisplay.Text = $"G{m.Plane}";
+            ModalStrokeCheckDisplay.Text = $"G{m.StrokeCheck}";
+            ModalSpeedFluctDisplay.Text = $"G{m.SpeedFluctuationDetect}";
+            ModalCuttingModeDisplay.Text = $"G{m.CuttingMode}";
+            ModalPolarCmdDisplay.Text = $"G{m.PolarCommand}";
+            ModalCoordRotDisplay.Text = $"G{m.CoordRotation}";
+            ModalToolLengthDisplay.Text = $"G{m.ToolLengthComp}";
+
+            ModalPolarInterpDisplay.Text = m.ExtendedGroups["PolarInterpolation"];
+            ModalMirrorDisplay.Text = m.ExtendedGroups["MirrorImage"];
+            ModalNormalDirDisplay.Text = m.ExtendedGroups["NormalDirection"];
+            ModalPolygonDisplay.Text = m.ExtendedGroups["PolygonTurning"];
+            ModalBalancedDisplay.Text = m.ExtendedGroups["BalancedCutting"];
+            ModalHighSpeedDisplay.Text = m.ExtendedGroups["HighSpeedCycle"];
+            ModalEgbADisplay.Text = m.ExtendedGroups["ElectronicGearBoxA"];
+            ModalEgbBDisplay.Text = m.ExtendedGroups["ElectronicGearBoxB"];
+
             // Coolant belongs in the modal block as its M-code, the way a real control lists it -
             // spelling out "COOLANT ON/OFF" overflowed the column and isn't what the machine shows.
-            ModalCoolantDisplay.Text = _sim.CoolantOn ? "M08" : "M09";
+            ModalCoolantDisplay.Text = "M   " + (_sim.CoolantOn ? "08" : "09");
 
             // The M field on a real POS screen shows the M-code currently in effect; spindle
             // direction is the only continuously-held M state this simulator actually tracks.
@@ -1266,6 +1297,9 @@ namespace FanucSimulator
             var modeLabel = _sim.Modal.Spindle == SpindleMode.ConstantSurfaceSpeed ? "CSS" : "RPM";
             SpindleDisplay.Text = _sim.SpindleDir != 0 ? $"{_sim.SpindleSpeed:F0} RPM ({modeLabel}) {dirLabel}" : "STOPPED";
             AllSpindleDisplay.Text = $"S {_sim.SpindleSpeed,8:F0}      {dirLabel}";
+
+            RelUBigDisplay.Text = FormatPos(_sim.RelativeU);
+            RelWBigDisplay.Text = FormatPos(_sim.RelativeW);
 
             ProgramIdDisplay.Text = $"{CurrentProgramNumber()} N00000";
             AllProgramPreview.Text = ProgramPreviewText();
@@ -1330,14 +1364,43 @@ namespace FanucSimulator
             if (sender is not Button button || button.Tag is not string view)
                 return;
 
-            var showAll = view == "ALL";
-            PosAbsView.Visibility = showAll ? Visibility.Collapsed : Visibility.Visible;
-            PosAbsStats.Visibility = showAll ? Visibility.Collapsed : Visibility.Visible;
-            PosAllView.Visibility = showAll ? Visibility.Visible : Visibility.Collapsed;
-            PosHeaderDisplay.Text = showAll ? "POSITION(ALL)" : "POSITION(ABS)";
+            // Three sub-views now, spelled as the real control spells them. The stats strip belongs
+            // to the two large-readout views; POS(ALL) carries its own copies of those figures.
+            PosAbsView.Visibility = view == "ABS" ? Visibility.Visible : Visibility.Collapsed;
+            PosRelView.Visibility = view == "REL" ? Visibility.Visible : Visibility.Collapsed;
+            PosAllView.Visibility = view == "ALL" ? Visibility.Visible : Visibility.Collapsed;
+            PosAbsStats.Visibility = view == "ALL" ? Visibility.Collapsed : Visibility.Visible;
 
-            PosAbsSubTab.Style = (Style)FindResource(showAll ? "SoftKeyButton" : "ActiveSoftKeyButton");
-            PosAllSubTab.Style = (Style)FindResource(showAll ? "ActiveSoftKeyButton" : "SoftKeyButton");
+            PosHeaderDisplay.Text = view switch
+            {
+                "REL" => "POSITION(REL)",
+                "ALL" => "POSITION(ALL)",
+                _ => "POSITION(ABS)",
+            };
+
+            PosAbsSubTab.Style = (Style)FindResource(view == "ABS" ? "ActiveSoftKeyButton" : "SoftKeyButton");
+            PosRelSubTab.Style = (Style)FindResource(view == "REL" ? "ActiveSoftKeyButton" : "SoftKeyButton");
+            PosAllSubTab.Style = (Style)FindResource(view == "ALL" ? "ActiveSoftKeyButton" : "SoftKeyButton");
+        }
+
+        // The relative counter's whole point is that the operator owns its origin - it is scratch
+        // space for "how far have I moved from here", independent of the work coordinate system.
+        private void ZeroRelU_Click(object sender, RoutedEventArgs e)
+        {
+            _sim.ZeroRelativeU();
+            UpdateDisplay();
+        }
+
+        private void ZeroRelW_Click(object sender, RoutedEventArgs e)
+        {
+            _sim.ZeroRelativeW();
+            UpdateDisplay();
+        }
+
+        private void ZeroRelAll_Click(object sender, RoutedEventArgs e)
+        {
+            _sim.ZeroRelativeBoth();
+            UpdateDisplay();
         }
 
         private static readonly SolidColorBrush CanvasBgNormal = new(Color.FromRgb(0x0a, 0x0a, 0x0a));

@@ -122,6 +122,18 @@ namespace FanucSimulator
         public const double ReferenceX = MaxX;
         public const double ReferenceZ = 150;
 
+        // The RELATIVE (U/W) counter has its own origin that the operator can zero independently of
+        // any work offset - it's scratch measurement, used for things like "how far have I moved
+        // since I touched off". Zeroing it never affects where the machine actually goes.
+        public double RelativeOriginX { get; private set; }
+        public double RelativeOriginZ { get; private set; }
+        public double RelativeU => X - RelativeOriginX;
+        public double RelativeW => Z - RelativeOriginZ;
+
+        public void ZeroRelativeU() => RelativeOriginX = X;
+        public void ZeroRelativeW() => RelativeOriginZ = Z;
+        public void ZeroRelativeBoth() { RelativeOriginX = X; RelativeOriginZ = Z; }
+
         private int _activeOffsetNumber = 0;
 
         // The previous comp-active segment's offset line (a point on it + its direction), used to
@@ -455,56 +467,64 @@ namespace FanucSimulator
                     Messages.Add("G99: Feed per revolution");
                     break;
                 default:
-                    if (!AcceptedInertGCodes.Contains(code))
+                    if (!ApplyInertGCode(code))
                         Alarms.Add(new Alarm(10, $"G{code:D2}: Improper G-code - not supported by this control"));
                     break;
             }
         }
 
         // Codes a real 0i-TF accepts and carries as modal state, but which have no effect on a
-        // 2-axis turning simulation - they are the "off"/default member of a modal group whose
-        // active member needs an axis or feature this engine doesn't model (C axis, tool length
-        // compensation, polar/cylindrical interpolation, stroke checking).
+        // 2-axis turning simulation - their active members need an axis or feature this engine
+        // doesn't model (C axis, tool length compensation, polar/cylindrical interpolation, a servo
+        // model for exact-stop vs cutting mode).
         //
-        // They are listed rather than silently ignored for a specific reason: without this set, the
-        // strict default case above would alarm on perfectly valid programs. Accepting them is
-        // correct; pretending they *do* something would not be. Nothing here changes machine state.
-        private static readonly HashSet<int> AcceptedInertGCodes = new()
+        // They are tracked rather than merely tolerated: the modal block on the POS screen shows
+        // this group, and displaying a hardcoded G22 after the program commanded G23 would be a lie
+        // on screen. So the last-commanded member is remembered and displayed - while still doing
+        // nothing, which is the honest part. Each entry maps the code to the ModalState field that
+        // holds its group.
+        private bool ApplyInertGCode(int code)
         {
-            7,   // cylindrical interpolation cancel (needs C axis)
-            17,  // XY plane select - meaningless on a 2-axis lathe but legal
-            18,  // ZX plane select - the lathe default
-            19,  // YZ plane select
-            22,  // stored stroke check on
-            23,  // stored stroke check off
-            25,  // spindle speed fluctuation detection off
-            26,  // spindle speed fluctuation detection on
-            49,  // tool length compensation cancel
-            64,  // cutting mode (vs G61 exact stop) - no servo model to differentiate
-            61,  // exact stop mode
-            15,  // polar coordinate command cancel
-            16,  // polar coordinate command (needs C axis)
-            69,  // coordinate rotation cancel
-        };
+            switch (code)
+            {
+                case 17: case 18: case 19: Modal.Plane = code; return true;
+                case 22: case 23: Modal.StrokeCheck = code; return true;
+                case 25: case 26: Modal.SpeedFluctuationDetect = code; return true;
+                case 61: case 64: Modal.CuttingMode = code; return true;
+                case 15: case 16: Modal.PolarCommand = code; return true;
+                case 68: case 69: Modal.CoordRotation = code; return true;
+                case 49: Modal.ToolLengthComp = code; return true;
+                case 7: return true; // cylindrical interpolation cancel - no group displayed for it
+                default: return false;
+            }
+        }
 
-        // Same idea for the decimal-suffixed codes the parser keeps in Block.ExtendedCodes. All of
-        // these are cancel states shown on the reference machine's modal block.
-        private static readonly HashSet<string> AcceptedInertExtendedCodes = new()
+        // Same idea for the decimal-suffixed codes the parser keeps in Block.ExtendedCodes: the
+        // value is the modal group each belongs to, so commanding one updates what the modal block
+        // displays for that group. Every one of these is inert here for the same reasons as above.
+        private static readonly Dictionary<string, string> ExtendedCodeGroups = new()
         {
-            "G5.5", "G05.5",   // high-speed cycle machining cancel
-            "G12.1", "G13.1",  // polar coordinate interpolation on/cancel (needs C axis)
-            "G40.1", "G41.1", "G42.1", // normal direction control (needs C axis)
-            "G50.1", "G51.1",  // programmable mirror image cancel/on
-            "G50.2", "G51.2",  // polygon turning cancel/on
-            "G69.1", "G68.1",  // balanced cutting cancel/on
-            "G80.4", "G81.4",  // electronic gear box cancel/on
-            "G80.5", "G81.5",
+            ["G5.5"] = "HighSpeedCycle",        ["G05.5"] = "HighSpeedCycle",
+            ["G5.4"] = "HighSpeedCycle",        ["G05.4"] = "HighSpeedCycle",
+            ["G12.1"] = "PolarInterpolation",   ["G13.1"] = "PolarInterpolation",
+            ["G40.1"] = "NormalDirection",      ["G41.1"] = "NormalDirection",
+            ["G42.1"] = "NormalDirection",
+            ["G50.1"] = "MirrorImage",          ["G51.1"] = "MirrorImage",
+            ["G50.2"] = "PolygonTurning",       ["G51.2"] = "PolygonTurning",
+            ["G68.1"] = "BalancedCutting",      ["G69.1"] = "BalancedCutting",
+            ["G80.4"] = "ElectronicGearBoxA",   ["G81.4"] = "ElectronicGearBoxA",
+            ["G80.5"] = "ElectronicGearBoxB",   ["G81.5"] = "ElectronicGearBoxB",
         };
 
         private void ApplyExtendedCode(string code)
         {
-            if (!AcceptedInertExtendedCodes.Contains(code))
+            if (!ExtendedCodeGroups.TryGetValue(code, out var group))
+            {
                 Alarms.Add(new Alarm(10, $"{code}: Improper G-code - not supported by this control"));
+                return;
+            }
+            // Normalise "G5.5" to the "G05.5" spelling the real screen uses for its modal block.
+            Modal.ExtendedGroups[group] = code.Length == 4 && code[1] == '5' ? "G0" + code.Substring(1) : code;
         }
 
         private void ApplyMCode(int code, GCodeParser.Block block)
@@ -590,7 +610,9 @@ namespace FanucSimulator
         {
             if (!AuxiliaryMCodes.TryGetValue(code, out var description))
                 return false;
-            Messages.Add($"M{code:D2}: {description}");
+            // Flagged at the point of use, not just in the table's comment - without this the log
+            // reads exactly like a verified code and invites the reader to trust a guess.
+            Messages.Add($"M{code:D2}: {description} (builder-specific - UNVERIFIED placeholder)");
             return true;
         }
 

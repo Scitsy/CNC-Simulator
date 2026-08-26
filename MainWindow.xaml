@@ -64,10 +64,13 @@
             <Setter Property="FontSize" Value="10"/>
             <Setter Property="Foreground" Value="{StaticResource MutedText}"/>
         </Style>
+        <!-- Tight vertical margin on purpose: the block is 8 rows deep and the real control packs
+             them just as closely. With the default 4px all round the last two rows fell off the
+             bottom of the screen area entirely. -->
         <Style x:Key="ModalCode" TargetType="TextBlock">
             <Setter Property="FontSize" Value="13"/>
             <Setter Property="Foreground" Value="{StaticResource ScreenCode}"/>
-            <Setter Property="Margin" Value="4"/>
+            <Setter Property="Margin" Value="3,1"/>
         </Style>
         <Style TargetType="DataGridColumnHeader">
             <Setter Property="Background" Value="{StaticResource ScreenBg}"/>
@@ -199,6 +202,33 @@
                                 </Grid>
                             </StackPanel>
 
+                            <!-- RELATIVE sub-view: the operator's own scratch counter, zeroable per
+                                 axis, which is what makes it different from ABSOLUTE. -->
+                            <StackPanel x:Name="PosRelView" Visibility="Collapsed" Margin="0,4,0,10">
+                                <Grid Margin="0,2,0,2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="34"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="U" FontSize="26" FontWeight="Bold" Foreground="{StaticResource ScreenAxisLabel}"/>
+                                    <TextBlock Grid.Column="1" x:Name="RelUBigDisplay" Text="0.0000" FontSize="30" FontWeight="Bold" Foreground="{StaticResource ScreenValue}" HorizontalAlignment="Right"/>
+                                </Grid>
+                                <Grid Margin="0,2,0,2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="34"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="W" FontSize="26" FontWeight="Bold" Foreground="{StaticResource ScreenAxisLabel}"/>
+                                    <TextBlock Grid.Column="1" x:Name="RelWBigDisplay" Text="0.0000" FontSize="30" FontWeight="Bold" Foreground="{StaticResource ScreenValue}" HorizontalAlignment="Right"/>
+                                </Grid>
+                                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                    <TextBlock Text="ORIGIN:" Foreground="{StaticResource ScreenStatLabel}" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                    <Button Content="U ZERO" Click="ZeroRelU_Click" Style="{StaticResource SoftKeyButton}" Width="80"/>
+                                    <Button Content="W ZERO" Click="ZeroRelW_Click" Style="{StaticResource SoftKeyButton}" Width="80"/>
+                                    <Button Content="ALL ZERO" Click="ZeroRelAll_Click" Style="{StaticResource SoftKeyButton}" Width="86"/>
+                                </StackPanel>
+                            </StackPanel>
+
                             <!-- ALL sub-view: laid out to match the real 0i-TF Plus POS(ALL) screen -
                                  a 2x2 block of ruled position boxes (RELATIVE/ABSOLUTE over MACHINE/
                                  DISTANCE TO GO) with the modal G-code block ruled off beneath them,
@@ -250,19 +280,57 @@
                                                     <ColumnDefinition Width="*"/>
                                                     <ColumnDefinition Width="Auto"/>
                                                 </Grid.ColumnDefinitions>
-                                                <UniformGrid Grid.Column="0" Rows="3" Columns="3">
+                                                <!-- Three code columns plus the address-letter column,
+                                                     reproducing the real screen's modal block layout. -->
+                                                <UniformGrid Grid.Column="0" Rows="8" Columns="4">
                                                     <TextBlock x:Name="ModalMotionDisplay" Text="G00" Style="{StaticResource ModalCode}"/>
-                                                    <TextBlock x:Name="ModalPositionDisplay" Text="G90" Style="{StaticResource ModalCode}"/>
-                                                    <TextBlock x:Name="ModalUnitsDisplay" Text="G21" Style="{StaticResource ModalCode}"/>
-                                                    <TextBlock x:Name="ModalFeedDisplay" Text="G99" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalCycleDisplay" Text="G80" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalPolarInterpDisplay" Text="G13.1" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalAddrFDisplay" Text="F" Style="{StaticResource ModalCode}"/>
+
                                                     <TextBlock x:Name="ModalSpindleDisplay" Text="G97" Style="{StaticResource ModalCode}"/>
-                                                    <TextBlock x:Name="ModalCompDisplay" Text="G40" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalMacroDisplay" Text="G67" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalMirrorDisplay" Text="G50.1" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalAddrHDisplay" Text="H" Style="{StaticResource ModalCode}"/>
+
+                                                    <TextBlock x:Name="ModalCoordRotDisplay" Text="G69" Style="{StaticResource ModalCode}"/>
                                                     <TextBlock x:Name="ModalWorkOffsetDisplay" Text="G54" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalToolLengthDisplay" Text="G49" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalAddrDDisplay" Text="D" Style="{StaticResource ModalCode}"/>
+
+                                                    <TextBlock x:Name="ModalFeedDisplay" Text="G99" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalCuttingModeDisplay" Text="G64" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalPolarCmdDisplay" Text="G15" Style="{StaticResource ModalCode}"/>
                                                     <TextBlock x:Name="ModalToolDisplay" Text="T00" Style="{StaticResource ModalCode}"/>
-                                                    <TextBlock x:Name="ModalCoolantDisplay" Text="COOLANT OFF" Style="{StaticResource ModalCode}"/>
+
+                                                    <TextBlock x:Name="ModalUnitsDisplay" Text="G20" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalPlaneDisplay" Text="G18" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalHighSpeedDisplay" Text="G05.5" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalAddrSDisplay" Text="S" Style="{StaticResource ModalCode}"/>
+
+                                                    <TextBlock x:Name="ModalCompDisplay" Text="G40" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalBalancedDisplay" Text="G69.1" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock Text="" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock Text="" Style="{StaticResource ModalCode}"/>
+
+                                                    <TextBlock x:Name="ModalSpeedFluctDisplay" Text="G25" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalNormalDirDisplay" Text="G40.1" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalEgbBDisplay" Text="G80.5" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalAddrBDisplay" Text="B" Style="{StaticResource ModalCode}"/>
+
+                                                    <TextBlock x:Name="ModalStrokeCheckDisplay" Text="G22" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalPolygonDisplay" Text="G50.2" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock x:Name="ModalEgbADisplay" Text="G80.4" Style="{StaticResource ModalCode}"/>
+                                                    <TextBlock Text="" Style="{StaticResource ModalCode}"/>
                                                 </UniformGrid>
-                                                <TextBlock Grid.Column="1" x:Name="ModalMCodeDisplay" Text="M   30" FontSize="13"
-                                                           Foreground="{StaticResource ScreenCode}" VerticalAlignment="Top" Margin="8,4,0,0"/>
+                                                <!-- The M field lists the auxiliary codes actually in
+                                                     effect. Spindle direction and coolant are the two
+                                                     continuously-held M states this engine tracks, so
+                                                     both are listed rather than only one. -->
+                                                <StackPanel Grid.Column="1" VerticalAlignment="Top" Margin="6,1,0,0">
+                                                    <TextBlock x:Name="ModalMCodeDisplay" Text="M   05" Style="{StaticResource ModalCode}" Margin="0,1"/>
+                                                    <TextBlock x:Name="ModalCoolantDisplay" Text="M   09" Style="{StaticResource ModalCode}" Margin="0,1"/>
+                                                </StackPanel>
                                             </Grid>
                                         </Border>
                                     </StackPanel>
@@ -351,10 +419,10 @@
                                 </StackPanel>
                             </Grid>
 
-                            <!-- ABS/REL/ALL/HANDLE sub-tabs -->
+                            <!-- Sub-view soft keys, spelled as the real screen spells them -->
                             <UniformGrid Rows="1">
-                                <Button x:Name="PosAbsSubTab" Content="ABS" Tag="ABS" Click="PosSubTab_Click" Style="{StaticResource ActiveSoftKeyButton}"/>
-                                <Button Content="REL" Style="{StaticResource DisabledSoftKeyButton}"/>
+                                <Button x:Name="PosAbsSubTab" Content="ABSOLUTE" Tag="ABS" Click="PosSubTab_Click" Style="{StaticResource ActiveSoftKeyButton}"/>
+                                <Button x:Name="PosRelSubTab" Content="RELATIVE" Tag="REL" Click="PosSubTab_Click" Style="{StaticResource SoftKeyButton}"/>
                                 <Button x:Name="PosAllSubTab" Content="ALL" Tag="ALL" Click="PosSubTab_Click" Style="{StaticResource SoftKeyButton}"/>
                                 <Button Content="HANDLE" Style="{StaticResource DisabledSoftKeyButton}"/>
                             </UniformGrid>

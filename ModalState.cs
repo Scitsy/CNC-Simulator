@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+
 namespace FanucSimulator
 {
     public enum MotionMode { Rapid, Linear, ArcCw, ArcCcw }
@@ -33,5 +35,33 @@ namespace FanucSimulator
         public int ActiveWorkOffset { get; set; } = 54;
         public double? MaxCssRpm { get; set; }
         public double SurfaceSpeedVc { get; set; } = 0;
+
+        // Modal groups the real control carries and displays but which have no effect on a 2-axis
+        // turning simulation - their active members need a C axis, tool length compensation, or a
+        // servo/look-ahead model none of which exist here. They are tracked rather than hardcoded
+        // so the modal block shows what the program actually last commanded: accepting G23 and then
+        // displaying G22 anyway would be a lie on screen. Defaults are each group's cancel state,
+        // which is what the reference machine's screen shows.
+        public int Plane { get; set; } = 18;                  // G17 / G18 (ZX, the lathe default) / G19
+        public int StrokeCheck { get; set; } = 22;            // G22 on / G23 off
+        public int SpeedFluctuationDetect { get; set; } = 25; // G25 off / G26 on
+        public int CuttingMode { get; set; } = 64;            // G61 exact stop / G64 cutting
+        public int PolarCommand { get; set; } = 15;           // G15 cancel / G16 on
+        public int CoordRotation { get; set; } = 69;          // G69 cancel / G68 on
+        public int ToolLengthComp { get; set; } = 49;         // G49 cancel
+
+        // Same idea for the decimal-suffixed groups (G13.1, G50.1, G40.1 ...), keyed by group name
+        // because the codes themselves are text - see LatheSimulator's ExtendedCodeGroups.
+        public Dictionary<string, string> ExtendedGroups { get; } = new()
+        {
+            ["PolarInterpolation"] = "G13.1",
+            ["MirrorImage"] = "G50.1",
+            ["NormalDirection"] = "G40.1",
+            ["PolygonTurning"] = "G50.2",
+            ["BalancedCutting"] = "G69.1",
+            ["HighSpeedCycle"] = "G05.5",
+            ["ElectronicGearBoxA"] = "G80.4",
+            ["ElectronicGearBoxB"] = "G80.5",
+        };
     }
 }

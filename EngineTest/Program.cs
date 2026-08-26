@@ -1135,6 +1135,28 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
     Check($"~{expectedMetric:F0} rpm at 50mm dia from S150 m/min", Math.Abs(sim2.SpindleSpeed - expectedMetric) < 1.0);
 }
 
+// ---- [69] RELATIVE counter has its own zeroable origin ----
+{
+    var sim = new LatheSimulator();
+    Console.WriteLine("[69] RELATIVE (U/W) counter is independent of ABSOLUTE");
+
+    RunFull(sim, new GCodeParser().Parse("G21\nT0101\nG00 X50 Z10\n"), out _);
+    // Untouched, the relative origin is 0, so U/W read the same as X/Z.
+    Check("U/W mirror X/Z before any zeroing", Math.Abs(sim.RelativeU - sim.X) < 1e-6 && Math.Abs(sim.RelativeW - sim.Z) < 1e-6);
+
+    sim.ZeroRelativeBoth();
+    Check("both read zero right after ALL ZERO", Math.Abs(sim.RelativeU) < 1e-6 && Math.Abs(sim.RelativeW) < 1e-6);
+    Check("zeroing the counter never moves the machine", Math.Abs(sim.X - 50) < 1e-6 && Math.Abs(sim.Z - 10) < 1e-6);
+
+    RunFull(sim, new GCodeParser().Parse("G00 X30 Z-5\n"), out _);
+    Check("U/W then count the distance travelled since", Math.Abs(sim.RelativeU - (-20)) < 1e-6 && Math.Abs(sim.RelativeW - (-15)) < 1e-6);
+    Check("ABSOLUTE is unaffected by the relative origin", Math.Abs(sim.X - 30) < 1e-6 && Math.Abs(sim.Z - (-5)) < 1e-6);
+
+    // Per-axis zeroing is the whole point of the separate U ZERO / W ZERO keys.
+    sim.ZeroRelativeW();
+    Check("W ZERO clears W and leaves U alone", Math.Abs(sim.RelativeW) < 1e-6 && Math.Abs(sim.RelativeU - (-20)) < 1e-6);
+}
+
 Console.WriteLine();
 Console.WriteLine($"===== TOTAL: {pass} passed, {fail} failed =====");
 Environment.Exit(fail == 0 ? 0 : 1);
