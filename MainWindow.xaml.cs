@@ -96,6 +96,11 @@ namespace FanucSimulator
         private int _partCount = 0;
         private bool _emergencyStop = false;
 
+        // Drives ProgramEndLed on the panel - a passive readout of whether the most recent run
+        // ended via M02/M30, cleared the moment a fresh run starts. Not engine state; the engine
+        // itself has no notion of a lamp staying lit between runs.
+        private bool _programEndLampOn = false;
+
         // Dual-legend MDI keypad keys, left-to-right/top-to-bottom matching the reference photo.
         // Some secondary legends are approximated where the source image was too small to read
         // with certainty; the primary (unshifted) character typed by each key is exact.
@@ -143,6 +148,7 @@ namespace FanucSimulator
             {
                 Console.Clear();
                 _cycleSimulatedSeconds = 0;
+                _programEndLampOn = false;
             }
 
             ApplyPanelSwitches();
@@ -166,7 +172,10 @@ namespace FanucSimulator
                         : "[Paused - press Execute to continue]", "info");
 
             if (result.ProgramEnded)
+            {
                 _partCount++;
+                _programEndLampOn = true;
+            }
 
             UpdateDisplay();
             RenderLathe();
@@ -187,7 +196,7 @@ namespace FanucSimulator
             _runSimulatedSeconds = 0;
             _cycleSimulatedSeconds = 0;
             _partCount = 0;
-            CoolantToggleButton.IsChecked = _sim.CoolantOn;
+            _programEndLampOn = false;
             RefreshStockUnitDisplay(force: true);
             UpdateDisplay();
             RenderLathe();
@@ -1291,9 +1300,6 @@ namespace FanucSimulator
             // Coolant belongs in the modal block as its M-code, the way a real control lists it -
             // spelling out "COOLANT ON/OFF" overflowed the column and isn't what the machine shows.
             ModalCoolantDisplay.Text = "M   " + (_sim.CoolantOn ? "08" : "09");
-            // M08/M09 in the program moves the coolant state too, so the panel lamp follows the
-            // engine rather than only the last click. Assigning IsChecked doesn't raise Click.
-            CoolantToggleButton.IsChecked = _sim.CoolantOn;
 
             // The M field on a real POS screen shows the M-code currently in effect; spindle
             // direction is the only continuously-held M state this simulator actually tracks.
@@ -1309,6 +1315,18 @@ namespace FanucSimulator
 
             RelUBigDisplay.Text = FormatPos(_sim.RelativeU);
             RelWBigDisplay.Text = FormatPos(_sim.RelativeW);
+
+            // Panel status LEDs: passive readouts of real engine state, not controls.
+            var litGreen = (SolidColorBrush)FindResource("OkGreen");
+            var dimLed = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55));
+            ProgramEndLed.Fill = _programEndLampOn ? litGreen : dimLed;
+            SpindleActiveLed.Fill = _sim.SpindleDir != 0 ? litGreen : dimLed;
+
+            // Turret dial pointer follows the currently selected station (T-word), 30 degrees per
+            // of the machine's 12 stations - a readout, like the LEDs above, not a control.
+            var stationAngle = 360.0 / MachineSpec.TurretStations;
+            var activeStation = _sim.CurrentTool >= 1 ? _sim.CurrentTool : 1;
+            TurretPointerRotation.Angle = (activeStation - 1) * stationAngle;
 
             ProgramIdDisplay.Text = $"{CurrentProgramNumber()} N00000";
             AllProgramPreview.Text = ProgramPreviewText();
@@ -1333,14 +1351,7 @@ namespace FanucSimulator
             AllPartCountDisplay.Text = PartCountDisplay.Text;
         }
 
-        private void CoolantToggle_Click(object sender, RoutedEventArgs e)
-        {
-            _sim.CoolantOn = CoolantToggleButton.IsChecked == true;
-            UpdateDisplay();
-            RenderLathe();
-        }
-
-        // The three panel switches that actually change how a program runs. They latch across runs
+// The three panel switches that actually change how a program runs. They latch across runs
         // and across RESET, exactly as the physical switches do - nothing in the G-code can move
         // them, and pressing RESET on a real control does not flip them back.
         //

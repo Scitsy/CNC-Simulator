@@ -1,7 +1,7 @@
 ﻿<Window x:Class="FanucSimulator.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Leadwell LTC-208 - FANUC 0i-TF Plus" Height="1040" Width="1560"
+        Title="Leadwell LTC-208 - FANUC 0i-TF Plus" Height="1000" Width="1560"
         Background="#0a0a0a" Foreground="#f0f0f0"
         FontFamily="Courier New" Closing="Window_Closing">
 
@@ -48,6 +48,30 @@
             <Setter Property="Margin" Value="2"/>
             <Setter Property="Padding" Value="2"/>
             <Setter Property="Height" Value="36"/>
+            <!-- The default Button chrome paints its own "disabled" look (a pale system grey) that
+                 ignores the Background setter above - exactly the same trap PanelToggleKey hit.
+                 Most of this panel's keys are IsEnabled="False" by design (they have no engine
+                 behaviour to back them), so left alone every one of them would render as a wrong,
+                 washed-out white block instead of a dim, dark, clearly-inert key. -->
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="1" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              ContentTemplate="{TemplateBinding ContentTemplate}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.55"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="BorderBrush" Value="#8fa8bb"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style x:Key="FunctionKey" TargetType="Button" BasedOn="{StaticResource KeypadKey}">
             <Setter Property="FontSize" Value="8"/>
@@ -124,6 +148,12 @@
         </Style>
     </Window.Resources>
 
+    <!-- The operator panel below is sized to its real content, which is substantially taller
+         than the placeholder key grid this used to be - real machines devote roughly as much
+         panel height as screen height to it. Rather than let a short window silently squeeze or
+         clip either area, everything scrolls: on a monitor tall enough for both, no scrollbar
+         appears and this looks identical to a fixed layout. -->
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
     <Grid>
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="1.6*"/>
@@ -131,7 +161,9 @@
             <ColumnDefinition Width="280"/>
         </Grid.ColumnDefinitions>
         <Grid.RowDefinitions>
-            <RowDefinition Height="*"/>
+            <!-- MinHeight keeps the lathe canvas and screen usable even though a ScrollViewer
+                 offers this row infinite height, which would otherwise collapse "*" to zero. -->
+            <RowDefinition Height="*" MinHeight="620"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
@@ -192,21 +224,17 @@
                 </Border>
             </Grid>
 
-            <!-- Mode select -->
-            <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
-                <Button x:Name="ModeEditButton" Content="EDIT" Tag="EDIT" Click="ModeButton_Click" Style="{StaticResource PanelButton}"/>
-                <Button x:Name="ModeAutoButton" Content="AUTO" Tag="AUTO" Click="ModeButton_Click" Style="{StaticResource PanelButton}"/>
-                <Button x:Name="ModeMdiButton" Content="MDI" Tag="MDI" Click="ModeButton_Click" Style="{StaticResource PanelButton}"/>
-                <Button Content="JOG" Style="{StaticResource DisabledPanelButton}"/>
-                <Button Content="HANDLE" Style="{StaticResource DisabledPanelButton}"/>
-                <Button Content="REF" Style="{StaticResource DisabledPanelButton}"/>
-            </StackPanel>
+            <!-- The real screen carries no on-screen mode row at all - EDIT/AUTO/MDI/TEACH/JOG/
+                 MPG/INC JOG/ZRN is a physical MODE cluster on the operator panel below (see the
+                 "Bottom: Operator panel" section), which is where ModeEditButton/ModeAutoButton/
+                 ModeMdiButton now live. Row 1 stays reserved (Auto height, no content) so the row
+                 indices below don't need renumbering. -->
 
             <!-- Screen -->
             <Border Grid.Row="2" Background="{StaticResource ScreenBg}" BorderThickness="2" BorderBrush="{StaticResource ScreenBorder}" Margin="0,0,0,8">
                 <Grid Margin="10">
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="*" MinHeight="380"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="34"/>
                         <RowDefinition Height="Auto"/>
@@ -799,80 +827,221 @@
             </Grid>
         </Grid>
 
-        <!-- Bottom: Operator panel. Most toggle keys are visual-only placeholders (single block, dry
-             run, MC lock etc. aren't modeled by the engine and shouldn't be faked) - COOLANT, CYCLE
-             START and CYCLE STOP alias real engine actions. Override dials are static gauges, not
-             wired to an actual feed/spindle multiplier - a bigger feature than this visual pass. -->
+        <!-- Bottom: Operator panel, laid out to match the reference photos' groups: FUNCTION,
+             OPTION, JOG and SPINDLE key blocks stacked center, E-STOP/FEED/RAPID/CYCLE keys to
+             their left, MODE/status LEDs/TURRET to their right.
+
+             Only keys the engine can honestly back are wired: SBK/BDT/OSP (single block, block
+             skip, optional stop - Phase D), EDIT/AUTO/MDI (mode), CYCLE START, RESET (up in the
+             cursor-arrow cluster) and E-STOP. Everything else on this panel is real on the
+             machine but has no counterpart in a 2-axis, non-real-time simulation - manual jogging,
+             chuck/tailstock/conveyor state, spindle jog, dry run, machine lock - so those keys are
+             visibly present, correctly grouped and labelled, and inert. Faking any of them would
+             claim behaviour this simulator does not have. -->
         <Border Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Background="#4a4a52" Margin="10,8,10,10" Padding="12">
             <Grid>
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <UniformGrid Grid.Column="0" Rows="5" Columns="4" Margin="0,0,16,0">
-                    <ToggleButton x:Name="SingleBlockKey" Content="SINGLE&#10;BLOCK" Checked="PanelSwitch_Changed" Unchecked="PanelSwitch_Changed" Style="{StaticResource PanelToggleKey}"/>
-                    <ToggleButton x:Name="BlockSkipKey" Content="BLOCK&#10;SKIP" Checked="PanelSwitch_Changed" Unchecked="PanelSwitch_Changed" Style="{StaticResource PanelToggleKey}"/>
-                    <ToggleButton x:Name="OptStopKey" Content="OPT&#10;STOP" Checked="PanelSwitch_Changed" Unchecked="PanelSwitch_Changed" Style="{StaticResource PanelToggleKey}"/>
-                    <Button Content="DRY&#10;RUN" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
-
-                    <Button Content="RESTART" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
-                    <Button Content="MC&#10;LOCK" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
-                    <ToggleButton x:Name="CoolantToggleButton" Content="COOLANT" Click="CoolantToggle_Click" Style="{StaticResource PanelToggleKey}"/>
-                    <Button Content="TOOL" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
-
-                    <Button Content="X" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
-                    <Button Content="Z" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
-                    <Button Content="4" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
-                    <Button Content="5" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
-
-                    <Button Content="6" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
-                    <Button Content="+" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
-                    <Button Content="RAPID" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
-                    <Button Content="-" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
-
-                    <Button Content="CYCLE&#10;STOP" Click="Reset_Click" Style="{StaticResource FunctionKey}"/>
-                    <Button Content="CYCLE&#10;START" Click="Execute_Click" Style="{StaticResource FunctionKey}" Background="#004400"/>
-                    <Button Content="PRG&#10;STOP" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
-                    <Button Style="{StaticResource FunctionKey}" IsEnabled="False"/>
-                </UniformGrid>
-
-                <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,20,0">
-                    <Grid Width="80" Height="80" HorizontalAlignment="Center">
-                        <Ellipse Width="80" Height="80" Fill="#e8c000"/>
-                        <Ellipse x:Name="EStopEllipse" Width="58" Height="58" Fill="#c81414" Stroke="#600000" StrokeThickness="2"
+                <!-- Left: E-stop, override dials, cycle keys -->
+                <StackPanel Grid.Column="0" Margin="0,0,16,0">
+                    <Grid Width="76" Height="76" HorizontalAlignment="Center">
+                        <Ellipse Width="76" Height="76" Fill="#e8c000"/>
+                        <Ellipse x:Name="EStopEllipse" Width="56" Height="56" Fill="#c81414" Stroke="#600000" StrokeThickness="2"
                                  Cursor="Hand" MouseLeftButtonDown="EStop_Click"/>
                     </Grid>
-                    <TextBlock Text="EMERGENCY STOP" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center" Margin="0,4,0,0"/>
-                </StackPanel>
+                    <TextBlock Text="EMERGENCY STOP" Foreground="{StaticResource MutedText}" FontSize="8" HorizontalAlignment="Center" Margin="0,3,0,10" TextWrapping="Wrap" TextAlignment="Center" Width="76"/>
 
-                <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="0,0,16,0">
-                    <Grid Width="64" Height="64">
+                    <TextBlock Text="FEED / %" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center"/>
+                    <Grid Width="58" Height="58" Margin="0,2,0,10">
                         <Ellipse Fill="#1a1a1a" Stroke="#777" StrokeThickness="1.5"/>
-                        <Line X1="32" Y1="32" X2="48" Y2="16" Stroke="White" StrokeThickness="2"/>
+                        <Line X1="29" Y1="29" X2="45" Y2="14" Stroke="White" StrokeThickness="2"/>
                     </Grid>
-                    <TextBlock Text="FEED %" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center" Margin="0,4,0,0"/>
-                </StackPanel>
 
-                <StackPanel Grid.Column="3" VerticalAlignment="Center" Margin="0,0,16,0">
-                    <Grid Width="64" Height="64">
+                    <TextBlock Text="RAPID / INC" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center"/>
+                    <Grid Width="58" Height="58" Margin="0,2,0,12">
                         <Ellipse Fill="#1a1a1a" Stroke="#777" StrokeThickness="1.5"/>
-                        <Line X1="32" Y1="32" X2="48" Y2="16" Stroke="White" StrokeThickness="2"/>
+                        <Line X1="29" Y1="29" X2="12" Y2="14" Stroke="White" StrokeThickness="2"/>
                     </Grid>
-                    <TextBlock Text="SPINDLE %" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                        <Button Content="&#9679;" Click="Execute_Click" Background="#004400" Foreground="#29d629"
+                                Width="40" Height="40" FontSize="20" Margin="0,0,6,0" ToolTip="CYCLE START"/>
+                        <!-- FEED HOLD stops motion mid-block on a real control. This engine executes a
+                             block atomically (there is no mid-block pause point), so honouring the
+                             press would either do nothing while claiming to, or silently act as RESET,
+                             which FEED HOLD is not. Left inert rather than either. -->
+                        <Button Content="&#9679;" IsEnabled="False" Background="#440000" Foreground="#803030"
+                                Width="40" Height="40" FontSize="20" ToolTip="FEED HOLD (not modeled - blocks run atomically)"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,2,0,0">
+                        <TextBlock Text="CYCLE START" Foreground="{StaticResource MutedText}" FontSize="7" Width="46" TextAlignment="Center" TextWrapping="Wrap"/>
+                        <TextBlock Text="FEED HOLD" Foreground="{StaticResource MutedText}" FontSize="7" Width="46" TextAlignment="Center" TextWrapping="Wrap"/>
+                    </StackPanel>
                 </StackPanel>
 
-                <StackPanel Grid.Column="4" VerticalAlignment="Bottom" HorizontalAlignment="Right">
-                    <Border x:Name="PowerToggleButton" Width="30" Height="30" Background="#2a2a2a" BorderBrush="#666" BorderThickness="1"
-                            Cursor="Hand" MouseLeftButtonDown="PowerToggle_Click" Margin="0,0,0,10">
-                        <TextBlock Text="&#9211;" Foreground="{StaticResource OkGreen}" FontSize="14" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                    </Border>
-                    <TextBlock Text="FANUC" Foreground="#c81414" FontWeight="Bold" FontSize="11" HorizontalAlignment="Right"/>
+                <!-- Center: FUNCTION / OPTION / JOG / SPINDLE, stacked exactly as the panel is -->
+                <StackPanel Grid.Column="1">
+                    <TextBlock Text="FUNCTION" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center" Margin="0,0,0,2"/>
+                    <UniformGrid Rows="2" Columns="4">
+                        <ToggleButton x:Name="SingleBlockKey" Content="SBK" Checked="PanelSwitch_Changed" Unchecked="PanelSwitch_Changed" Style="{StaticResource PanelToggleKey}" ToolTip="SINGLE BLOCK"/>
+                        <ToggleButton x:Name="BlockSkipKey" Content="BDT" Checked="PanelSwitch_Changed" Unchecked="PanelSwitch_Changed" Style="{StaticResource PanelToggleKey}" ToolTip="BLOCK SKIP"/>
+                        <ToggleButton x:Name="OptStopKey" Content="OSP" Checked="PanelSwitch_Changed" Unchecked="PanelSwitch_Changed" Style="{StaticResource PanelToggleKey}" ToolTip="OPTIONAL STOP"/>
+                        <Button Content="LAMP" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                        <Button Content="DRN" Style="{StaticResource FunctionKey}" IsEnabled="False" ToolTip="DRY RUN"/>
+                        <Button Content="M.S.T" Style="{StaticResource FunctionKey}" IsEnabled="False" ToolTip="M/S/T LOCK"/>
+                        <Button Content="M.L.K" Style="{StaticResource FunctionKey}" IsEnabled="False" ToolTip="MACHINE LOCK"/>
+                        <Button Content="BUZZER" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                    </UniformGrid>
+
+                    <TextBlock Text="OPTION" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center" Margin="0,6,0,2"/>
+                    <UniformGrid Rows="3" Columns="4">
+                        <Button Content="OUT" Style="{StaticResource FunctionKey}" IsEnabled="False" ToolTip="TAILSTOCK OUT"/>
+                        <Button Content="IN" Style="{StaticResource FunctionKey}" IsEnabled="False" ToolTip="TAILSTOCK IN"/>
+                        <Button Content="TAIL" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                        <Button Content="M30&#10;APO" Style="{StaticResource FunctionKey}" IsEnabled="False" ToolTip="AUTO POWER OFF AFTER M30"/>
+                        <Button Content="OPEN" Style="{StaticResource FunctionKey}" IsEnabled="False" ToolTip="CHUCK OPEN"/>
+                        <Button Content="CLOSE" Style="{StaticResource FunctionKey}" IsEnabled="False" ToolTip="CHUCK CLOSE"/>
+                        <Button Content="CW" Style="{StaticResource FunctionKey}" IsEnabled="False" ToolTip="CONVEYOR CW"/>
+                        <Button Content="CCW" Style="{StaticResource FunctionKey}" IsEnabled="False" ToolTip="CONVEYOR CCW"/>
+                        <Button Content="MAN" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                        <Button Content="AUTO" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                        <Button Content="CLEAN" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                        <Button Content="WGUN" Style="{StaticResource FunctionKey}" IsEnabled="False" ToolTip="WASH GUN"/>
+                    </UniformGrid>
+
+                    <TextBlock Text="JOG" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center" Margin="0,6,0,2"/>
+                    <UniformGrid Rows="3" Columns="4">
+                        <Button Content="SETTER" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                        <Button Content="Y" Style="{StaticResource FunctionKey}" IsEnabled="False" ToolTip="Y axis - not modeled, see Scope"/>
+                        <Button Content="ORI." Style="{StaticResource FunctionKey}" IsEnabled="False" ToolTip="SPINDLE ORIENT"/>
+                        <Button Content="SP#1-C" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                        <Button Content="X" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                        <Button Content="Z" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                        <Button Content="C" Style="{StaticResource FunctionKey}" IsEnabled="False" ToolTip="C axis - not modeled, see Scope"/>
+                        <Button Content="HOME" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                        <Button Content="-" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                        <Button Content="RAPID" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                        <Button Content="+" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                        <Button Content="O.T" Style="{StaticResource FunctionKey}" IsEnabled="False" Background="#440000" ToolTip="OVERTRAVEL RELEASE"/>
+                    </UniformGrid>
+
+                    <TextBlock Text="SPINDLE" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center" Margin="0,6,0,2"/>
+                    <UniformGrid Rows="2" Columns="4">
+                        <Button Content="CW" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                        <Button Content="STOP" Style="{StaticResource FunctionKey}" IsEnabled="False" Background="#440000"/>
+                        <Button Content="CCW" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                        <Button Content="JOG" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                        <Button Content="DEC" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                        <Button Content="100%" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                        <Button Content="INC" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                        <Button Content="RESET" Style="{StaticResource FunctionKey}" IsEnabled="False" ToolTip="Spindle override reset - not the system RESET"/>
+                    </UniformGrid>
+                </StackPanel>
+
+                <!-- Right: status LEDs, MODE, TURRET -->
+                <StackPanel Grid.Column="2" Margin="16,0,16,0" Width="150">
+                    <UniformGrid Rows="1" Columns="6" Margin="0,0,0,2">
+                        <TextBlock Text="X" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center"/>
+                        <TextBlock Text="Z" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center"/>
+                        <TextBlock Text="C" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center"/>
+                        <TextBlock Text="Y" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center"/>
+                        <TextBlock Text="M02" Foreground="{StaticResource MutedText}" FontSize="7" HorizontalAlignment="Center"/>
+                        <TextBlock Text="SP#1" Foreground="{StaticResource MutedText}" FontSize="7" HorizontalAlignment="Center"/>
+                    </UniformGrid>
+                    <UniformGrid Rows="1" Columns="6" Margin="0,0,0,10">
+                        <Ellipse Width="9" Height="9" Fill="#555" HorizontalAlignment="Center"/>
+                        <Ellipse Width="9" Height="9" Fill="#555" HorizontalAlignment="Center"/>
+                        <Ellipse Width="9" Height="9" Fill="#555" HorizontalAlignment="Center"/>
+                        <Ellipse Width="9" Height="9" Fill="#555" HorizontalAlignment="Center"/>
+                        <!-- Lights whenever a run most recently ended via M02/M30 - a passive readout of
+                             real state (RunResult.ProgramEnded), cleared the moment Execute runs again. -->
+                        <Ellipse x:Name="ProgramEndLed" Width="9" Height="9" Fill="#555" HorizontalAlignment="Center"/>
+                        <!-- Lights whenever the spindle is actually turning (SpindleDir != 0) - likewise
+                             a passive readout, not a control. -->
+                        <Ellipse x:Name="SpindleActiveLed" Width="9" Height="9" Fill="#555" HorizontalAlignment="Center"/>
+                    </UniformGrid>
+
+                    <TextBlock Text="MODE" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center" Margin="0,0,0,3"/>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,6">
+                        <Button x:Name="ModeEditButton" Content="EDIT" Tag="EDIT" Click="ModeButton_Click" Style="{StaticResource PanelButton}" Padding="6,2" FontSize="10"/>
+                        <Button x:Name="ModeAutoButton" Content="AUTO" Tag="AUTO" Click="ModeButton_Click" Style="{StaticResource PanelButton}" Padding="6,2" FontSize="10"/>
+                        <Button x:Name="ModeMdiButton" Content="MDI" Tag="MDI" Click="ModeButton_Click" Style="{StaticResource PanelButton}" Padding="6,2" FontSize="10"/>
+                    </StackPanel>
+
+                    <!-- The rotary half of MODE: TEACH/MPG/JOG/INC JOG/ZRN. None have engine behaviour
+                         (no manual jogging or handle-wheel model exists), so the dial is a faithful
+                         static face, not a control - turning a physical knob isn't something a mouse
+                         click can honestly stand in for anyway. -->
+                    <Canvas Width="110" Height="90" HorizontalAlignment="Center" Margin="0,0,0,8">
+                        <Ellipse Canvas.Left="27" Canvas.Top="12" Width="56" Height="56" Fill="#1a1a1a" Stroke="#777" StrokeThickness="1.5"/>
+                        <Line X1="55" Y1="40" X2="70" Y2="26" Stroke="#999" StrokeThickness="2" Canvas.Left="0" Canvas.Top="0"/>
+                        <TextBlock Text="TEACH" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="2" Canvas.Top="8"/>
+                        <TextBlock Text="MPG" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="80" Canvas.Top="8"/>
+                        <TextBlock Text="JOG" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="88" Canvas.Top="38"/>
+                        <TextBlock Text="INC JOG" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="72" Canvas.Top="66"/>
+                        <TextBlock Text="ZRN" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="4" Canvas.Top="66"/>
+                    </Canvas>
+
+                    <TextBlock Text="TURRET" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center" Margin="0,0,0,3"/>
+                    <Canvas Width="90" Height="90" HorizontalAlignment="Center">
+                        <Ellipse Canvas.Left="15" Canvas.Top="15" Width="60" Height="60" Fill="#1a1a1a" Stroke="#777" StrokeThickness="1.5"/>
+                        <!-- Twelve stations, matching this machine's actual turret (MachineSpec.
+                             TurretStations) - the dial graphic here is drawn for 12 whether or not
+                             that ever changes, rather than hardcoding the number twice. -->
+                        <TextBlock Text="1" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="42" Canvas.Top="2"/>
+                        <TextBlock Text="2" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="58" Canvas.Top="6"/>
+                        <TextBlock Text="3" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="70" Canvas.Top="18"/>
+                        <TextBlock Text="4" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="76" Canvas.Top="34"/>
+                        <TextBlock Text="5" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="76" Canvas.Top="50"/>
+                        <TextBlock Text="6" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="70" Canvas.Top="66"/>
+                        <TextBlock Text="7" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="58" Canvas.Top="78"/>
+                        <TextBlock Text="8" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="42" Canvas.Top="82"/>
+                        <TextBlock Text="9" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="26" Canvas.Top="78"/>
+                        <TextBlock Text="10" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="10" Canvas.Top="66"/>
+                        <TextBlock Text="11" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="6" Canvas.Top="50"/>
+                        <TextBlock Text="12" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="6" Canvas.Top="34"/>
+                        <!-- Passive readout of the currently selected station, rotated in code
+                             behind whenever CurrentTool changes - not a control. -->
+                        <Line x:Name="TurretPointer" X1="45" Y1="45" X2="45" Y2="22" Stroke="#29d629" StrokeThickness="2.5"
+                              Canvas.Left="0" Canvas.Top="0" RenderTransformOrigin="0.5,0.5">
+                            <Line.RenderTransform>
+                                <RotateTransform x:Name="TurretPointerRotation" CenterX="45" CenterY="45" Angle="0"/>
+                            </Line.RenderTransform>
+                        </Line>
+                    </Canvas>
+                </StackPanel>
+
+                <!-- Far right: key switches (decorative - a real key switch isn't something a mouse
+                     click can honestly stand in for either) and the power/logo stack -->
+                <StackPanel Grid.Column="3" VerticalAlignment="Stretch">
+                    <StackPanel HorizontalAlignment="Center" Margin="0,0,0,10">
+                        <Ellipse Width="20" Height="20" Fill="#1a1a1a" Stroke="#999" StrokeThickness="1.5" HorizontalAlignment="Center"/>
+                        <TextBlock Text="HANDLE&#10;KEY" Foreground="{StaticResource MutedText}" FontSize="7" TextAlignment="Center" Margin="0,2,0,0"/>
+                    </StackPanel>
+                    <StackPanel HorizontalAlignment="Center" Margin="0,0,0,10">
+                        <Ellipse Width="20" Height="20" Fill="#1a1a1a" Stroke="#999" StrokeThickness="1.5" HorizontalAlignment="Center"/>
+                        <TextBlock Text="EDIT&#10;KEY" Foreground="{StaticResource MutedText}" FontSize="7" TextAlignment="Center" Margin="0,2,0,0"/>
+                    </StackPanel>
+                    <StackPanel HorizontalAlignment="Center">
+                        <Ellipse Width="20" Height="20" Fill="#1a1a1a" Stroke="#999" StrokeThickness="1.5" HorizontalAlignment="Center"/>
+                        <TextBlock Text="SP#1" Foreground="{StaticResource MutedText}" FontSize="7" TextAlignment="Center" Margin="0,2,0,0"/>
+                    </StackPanel>
+
+                    <StackPanel VerticalAlignment="Bottom" HorizontalAlignment="Right" Margin="0,20,0,0">
+                        <Border x:Name="PowerToggleButton" Width="30" Height="30" Background="#2a2a2a" BorderBrush="#666" BorderThickness="1"
+                                Cursor="Hand" MouseLeftButtonDown="PowerToggle_Click" Margin="0,0,0,10">
+                            <TextBlock Text="&#9211;" Foreground="{StaticResource OkGreen}" FontSize="14" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <TextBlock Text="FANUC" Foreground="#c81414" FontWeight="Bold" FontSize="11" HorizontalAlignment="Right"/>
+                    </StackPanel>
                 </StackPanel>
             </Grid>
         </Border>
     </Grid>
+    </ScrollViewer>
 </Window>
