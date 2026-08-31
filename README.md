@@ -2,7 +2,8 @@
 
 [![CI](https://github.com/Scitsy/CNC-Simulator/actions/workflows/ci.yml/badge.svg)](https://github.com/Scitsy/CNC-Simulator/actions/workflows/ci.yml)
 
-A CNC lathe simulator modeled on a real FANUC 0i-TF Plus control: a full G-code parser and
+A CNC lathe simulator modeled on a real machine - a **Leadwell LTC-208** turning centre running a
+**FANUC 0i-TF Plus**: a full G-code parser and
 machining engine, a carved (not just drawn) stock model, and a WPF UI that mirrors the actual
 control's screens (POS / PROGRAM / OFFSET / ALARM / MACRO / HELP), softkey navigation, and MDI
 keypad. It's a hobby project, but it isn't a toy - canned cycles carve real geometry, cutter
@@ -25,7 +26,13 @@ runs real conditionals and loops, not just token substitution.
 - **Cutter nose radius compensation**: G41/G42/G40 - a true perpendicular-to-travel offset with
   corner mitering, not a cosmetic flag.
 - **Work and tool offsets**: G54-G59 work coordinate systems, a full tool offset table (geometry +
-  wear, X/Z), all editable live on the OFFSET screen.
+  wear, X/Z) covering all 12 turret stations, all editable live on the OFFSET screen.
+- **Operator panel switches that actually do something**: SINGLE BLOCK steps one block per Cycle
+  Start, BLOCK SKIP honours the leading `/` on a block, and OPT STOP arms `M01`. Keys the engine
+  cannot honestly service (DRY RUN, MC LOCK, the C/Y jog keys) stay visibly inert rather than
+  pretending - see Scope.
+- **Machine limits**: spindle commands are clamped to the machine's 4500 RPM ceiling the way a real
+  drive clamps them, rather than faulting the program.
 - **A visual tool library**: a schematic tool-geometry renderer plus a Tool Builder window for
   designing custom holder/insert combinations.
 - **Custom Macro B**: local (`#1-#33`) and common (`#100-#999`) variables, arithmetic expressions,
@@ -81,6 +88,9 @@ Or open `FanucSimulator.sln` in Visual Studio / Rider and run the `FanucSimulato
 `NCFiles/` has over a dozen example programs, loadable from the PROGRAM screen's `Load...` button.
 A few worth starting with:
 
+- **`O0015_panel_switch_demo.nc`** - run it four times, flipping one operator-panel switch each
+  time, to see SINGLE BLOCK, BLOCK SKIP and OPT STOP change what actually happens. Runs on the
+  default stock.
 - **`O0014_inch_turning_demo.nc`** - the closest to real shop work: inch throughout, faced with the
   `G94` cycle, roughed with a modal `G90` (bare `X` blocks taking successive passes), finished using
   `U`/`W` incremental addressing, and grooved with `G75`. Runs on the default 3.0 x 4.0 in stock.
@@ -98,7 +108,7 @@ A few worth starting with:
 ## Testing
 
 `EngineTest/` is a headless console harness (source-linked against the same engine files, no test
-framework dependency) with 228 hand-rolled assertions covering every documented G/M-code, both
+framework dependency) with 264 hand-rolled assertions covering every documented G/M-code, both
 canned-cycle directions, macro control flow, geometry checks against several of the demo programs
 above, the catalog-persistence round-trip, and exact closed-form cycle-time checks. Runs
 automatically on every push via GitHub Actions (see the badge at the top of this file).
@@ -122,7 +132,12 @@ dotnet run
 ## Scope
 
 This models a 2-axis turning center closely enough to be useful for learning and testing programs,
-not a certified twin of any real control. Not currently modeled: Custom Macro B indirect addressing
+not a certified twin of any real control. **The auxiliary M-codes are not verified.** FANUC's own
+codes (spindle, coolant, program control, subprograms) are standard and correct, but chuck,
+tailstock, parts catcher, wash gun and conveyor codes are implemented in the machine builder's PMC
+ladder rather than in the CNC - so no FANUC manual defines them, and Leadwell does not publish the
+LTC-208's list openly. They live in one table in `LatheSimulator.cs`, each tagged with how it was
+arrived at; the HELP screen explains how to read the real list off the machine's own ladder. Not currently modeled: Custom Macro B indirect addressing
 (`#[expr]`) and multiple statements per block, and general system variables beyond the three listed
 above. The 3D view is a first pass: the chuck is a simplified 3-jaw stand-in (flat wedge jaws, not
 manufacturer-accurate geometry), the cutaway view only ever cuts the workpiece (not the chuck), and

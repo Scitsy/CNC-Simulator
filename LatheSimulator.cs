@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -148,7 +148,25 @@ namespace FanucSimulator
         // offset jump itself. Null only before the very first move of the run.
         private (double X, double Z)? _lastActualRenderPos = null;
 
+        // The three operator-panel switches that genuinely change how a program runs. They are
+        // panel state, not program state: a real control keeps them set across runs and RESET, and
+        // nothing in the G-code can turn them on or off, which is why they live here as plain
+        // properties rather than in ModalState.
+        //
+        // SINGLE BLOCK (SBK): stop after each block instead of running to the end.
+        // BLOCK SKIP (BDT): honour the leading '/' on a block and skip it.
+        // OPTIONAL STOP (OSP): make M01 pause. With it off M01 is a no-op, which is the whole
+        //   point of the code - so M01 is inert here by design, not by omission.
+        public bool SingleBlock { get; set; }
+        public bool BlockSkip { get; set; }
+        public bool OptionalStop { get; set; }
+
         private enum BlockRangeExit { RanOffEnd, Returned, Paused, ProgramEnded }
+
+        // SBK stops after each block that actually did something. Labels and macro control-flow
+        // lines are stepped through rather than stopped on: they command no motion, and stopping on
+        // every WHILE condition re-test would make single block unusable on a macro program.
+        private bool SingleBlockStop(bool isTopLevel) => isTopLevel && SingleBlock;
 
         public RunResult RunProgram(List<GCodeParser.Block> blocks, int startIndex = 0)
         {
@@ -194,6 +212,15 @@ namespace FanucSimulator
                     continue;
                 }
 
+                // Block delete applies at every level, not just the top - a '/' line inside a
+                // subprogram is skipped by the same switch.
+                if (BlockSkip && block.IsBlockDelete)
+                {
+                    Messages.Add($"/ Block skipped (BLOCK SKIP on): {block.RawCode}");
+                    i++;
+                    continue;
+                }
+
                 if (block.Commands.Any(c => c.Type == 'M' && c.Code == 99))
                 {
                     Messages.Add("M99: Return from subprogram/macro");
@@ -223,6 +250,7 @@ namespace FanucSimulator
                 {
                     StoreRoughingSetup(toExecute);
                     i++;
+                    if (SingleBlockStop(isTopLevel)) return (BlockRangeExit.Paused, i);
                     continue;
                 }
 
@@ -230,6 +258,7 @@ namespace FanucSimulator
                 {
                     StoreDrillingSetup(toExecute);
                     i++;
+                    if (SingleBlockStop(isTopLevel)) return (BlockRangeExit.Paused, i);
                     continue;
                 }
 
@@ -237,6 +266,7 @@ namespace FanucSimulator
                 {
                     StoreGroovingSetup(toExecute);
                     i++;
+                    if (SingleBlockStop(isTopLevel)) return (BlockRangeExit.Paused, i);
                     continue;
                 }
 
@@ -244,6 +274,7 @@ namespace FanucSimulator
                 {
                     StoreThreadingSetup(toExecute);
                     i++;
+                    if (SingleBlockStop(isTopLevel)) return (BlockRangeExit.Paused, i);
                     continue;
                 }
 
@@ -267,6 +298,10 @@ namespace FanucSimulator
                     {
                         i++;
                     }
+
+                    // A canned cycle is one block to the operator, however many moves it makes -
+                    // single block stops after the whole cycle, not partway through it.
+                    if (SingleBlockStop(isTopLevel)) return (BlockRangeExit.Paused, i);
                     continue;
                 }
 
@@ -275,6 +310,15 @@ namespace FanucSimulator
 
                 if (isTopLevel && toExecute.Commands.Any(c => c.Type == 'M' && c.Code == 0))
                     return (BlockRangeExit.Paused, i + 1);
+
+                // M01 does nothing at all unless the operator has armed OPTIONAL STOP - that is the
+                // code's entire purpose, so an inert M01 with the switch off is correct behaviour.
+                if (isTopLevel && OptionalStop && toExecute.Commands.Any(c => c.Type == 'M' && c.Code == 1))
+                {
+                    // ApplyMCode has already logged the M01 and which way the switch is set;
+                    // repeating it here just doubles the line in the console.
+                    return (BlockRangeExit.Paused, i + 1);
+                }
 
                 // M02 and M30 both end the program; on a real control the difference is only that
                 // M30 rewinds the cursor to the top, which is what the 0 vs i+1 index expresses.
@@ -285,6 +329,7 @@ namespace FanucSimulator
                     return (BlockRangeExit.ProgramEnded, i + 1);
 
                 i++;
+                if (SingleBlockStop(isTopLevel)) return (BlockRangeExit.Paused, i);
             }
 
             if (!isTopLevel)
@@ -455,7 +500,7 @@ namespace FanucSimulator
                 case 97:
                     Modal.Spindle = SpindleMode.ConstantRpm;
                     if (block.Params.TryGetValue("Speed", out var rpm))
-                        SpindleSpeed = rpm;
+                        SpindleSpeed = ClampToMachineMaxRpm(rpm);
                     Messages.Add("G97: Constant spindle speed (RPM)");
                     break;
                 case 98:
@@ -535,7 +580,11 @@ namespace FanucSimulator
                     Messages.Add("M00: Program stop");
                     break;
                 case 1:
-                    Messages.Add("M01: Optional stop (ignored - switch not modeled)");
+                    // The pause itself is handled by RunBlockRange, which is the only place that
+                    // can actually stop the run; this just reports which way the switch is set.
+                    Messages.Add(OptionalStop
+                        ? "M01: Optional stop"
+                        : "M01: Optional stop (OPT STOP off - ignored)");
                     break;
                 case 3:
                     SpindleDir = 1;
@@ -584,35 +633,69 @@ namespace FanucSimulator
             }
         }
 
-        // Auxiliary M-codes are assigned by the machine builder, not by FANUC, so a control accepts
-        // whatever its own ladder implements. These are the ones inferred from the reference
-        // machine's operator panel (chuck, tailstock, wash gun and so on).
-        //
-        // *** THESE NUMBERS ARE EDUCATED GUESSES, NOT VERIFIED AGAINST THE REAL MACHINE. ***
-        // They were chosen from common lathe conventions because the panel shows the *functions*
-        // but not their codes. Replacing them with the real table from the machine's manual is a
-        // one-line edit here - nothing else in the engine hardcodes an auxiliary number.
-        private static readonly Dictionary<int, string> AuxiliaryMCodes = new()
+        // How confident we are that an auxiliary M-code number is right for THIS machine. The
+        // distinction is the point of the table: "the panel has a chuck clamp" is verified, while
+        // "the chuck clamp is M10" is not, and collapsing the two is how someone ends up trusting
+        // a guess on real iron.
+        private enum CodeSource
         {
-            [10] = "Chuck clamp",
-            [11] = "Chuck unclamp",
-            [12] = "Tailstock quill advance",
-            [13] = "Tailstock quill retract",
-            [21] = "Parts catcher out",
-            [22] = "Parts catcher in",
-            [50] = "Wash gun on",
-            [51] = "Wash gun off",
-            [52] = "Chip conveyor on",
-            [53] = "Chip conveyor off",
+            Fanuc,      // Defined by FANUC; identical on every FANUC lathe.
+            Convention, // Widely used across builders and corroborated for Leadwell specifically.
+            Guess,      // Function confirmed from the machine's panel; NUMBER inferred, not read.
+        }
+
+        // Auxiliary M-codes are implemented in the machine BUILDER's PMC ladder, not in the CNC, so
+        // a control accepts exactly whatever its own ladder decodes and nothing else. FANUC's own
+        // manual for the 0i-TF Plus cannot answer what these are - only Leadwell's documentation
+        // for this machine can.
+        //
+        // For the reference machine (Leadwell LTC-208, serial L2TAG0843, 2020 - see MachineSpec)
+        // that documentation is not published openly; Leadwell lists an "LTC-20 FANUC Machine
+        // Instruction Manual" on its own download page but does not serve it. So the table below
+        // is still not verified against the machine, and every entry says how it was arrived at.
+        //
+        // Correcting one is a one-line edit here - nothing else in the engine hardcodes an
+        // auxiliary number. Two ways to get the real list, in order of reliability:
+        //   1. Leadwell's operation manual for the LTC-208 (ask Leadwell or the dealer, quoting
+        //      the serial above).
+        //   2. The machine's own PMC ladder, on the control: SYSTEM -> PMC -> PMCLAD. The M-code
+        //      decode instructions there name precisely which M numbers this machine implements,
+        //      which is the ground truth the manual is merely describing.
+        private static readonly Dictionary<int, (string Description, CodeSource Source)> AuxiliaryMCodes = new()
+        {
+            // Corroborated for Leadwell lathes specifically, across several independent operator
+            // reports, and consistent with the general lathe convention.
+            [10] = ("Chuck clamp", CodeSource.Convention),
+            [11] = ("Chuck unclamp", CodeSource.Convention),
+
+            // Tailstock is the least settled of these. M12/M13 is one common pairing, but M21/M22
+            // and M78/M79 are all in use on different builders' lathes - so this is a guess even
+            // though the function certainly exists on the machine.
+            [12] = ("Tailstock quill advance", CodeSource.Guess),
+            [13] = ("Tailstock quill retract", CodeSource.Guess),
+
+            // No convergent source for any of these on a Leadwell. Pure inference from the panel.
+            [21] = ("Parts catcher out", CodeSource.Guess),
+            [22] = ("Parts catcher in", CodeSource.Guess),
+            [50] = ("Wash gun on", CodeSource.Guess),
+            [51] = ("Wash gun off", CodeSource.Guess),
+            [52] = ("Chip conveyor on", CodeSource.Guess),
+            [53] = ("Chip conveyor off", CodeSource.Guess),
         };
 
         private bool IsAcceptedAuxiliaryMCode(int code)
         {
-            if (!AuxiliaryMCodes.TryGetValue(code, out var description))
+            if (!AuxiliaryMCodes.TryGetValue(code, out var entry))
                 return false;
+
             // Flagged at the point of use, not just in the table's comment - without this the log
             // reads exactly like a verified code and invites the reader to trust a guess.
-            Messages.Add($"M{code:D2}: {description} (builder-specific - UNVERIFIED placeholder)");
+            var note = entry.Source switch
+            {
+                CodeSource.Convention => "builder-specific - matches common Leadwell usage, NOT verified on this machine",
+                _ => "builder-specific - NUMBER IS A GUESS, function inferred from the panel",
+            };
+            Messages.Add($"M{code:D2}: {entry.Description} ({note})");
             return true;
         }
 
@@ -632,8 +715,20 @@ namespace FanucSimulator
             }
             else
             {
-                SpindleSpeed = speed;
+                SpindleSpeed = ClampToMachineMaxRpm(speed);
             }
+        }
+
+        // A real spindle cannot be commanded past its maximum: the drive simply runs at the limit.
+        // It is not an alarm condition on any control I know of, so this clamps and notes it rather
+        // than faulting the program. The limit is this machine's published figure - see MachineSpec.
+        private double ClampToMachineMaxRpm(double rpm)
+        {
+            if (rpm <= MachineSpec.MaxSpindleRpm)
+                return rpm;
+
+            Messages.Add($"S{rpm:F0} exceeds the machine maximum - spindle clamped to {MachineSpec.MaxSpindleRpm:F0} RPM");
+            return MachineSpec.MaxSpindleRpm;
         }
 
         // Constant surface speed. The S value under G96 is m/min in metric but surface FEET per
@@ -650,7 +745,10 @@ namespace FanucSimulator
             var rpm = Modal.SurfaceSpeedVc * constant / (Math.PI * diameterMm);
             if (Modal.MaxCssRpm.HasValue)
                 rpm = Math.Min(rpm, Modal.MaxCssRpm.Value);
-            SpindleSpeed = rpm;
+            // The machine's own ceiling applies on top of any programmed G50 clamp, and cannot be
+            // programmed away. Under CSS this bites constantly - small diameters ask for enormous
+            // rpm - so it is silent here rather than logging on every recalculation.
+            SpindleSpeed = Math.Min(rpm, MachineSpec.MaxSpindleRpm);
         }
 
         private void SelectTool(GCodeParser.Block block)

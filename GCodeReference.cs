@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 
 namespace FanucSimulator
 {
@@ -76,8 +76,8 @@ namespace FanucSimulator
             },
             new SetupTip
             {
-                Title = "Auxiliary M-Codes Are Machine-Specific (these are GUESSES)",
-                Body = "FANUC defines the common M-codes - M00/M01/M02/M30 program control, M03/M04/M05 spindle, M08/M09 coolant, M19 orient, M98/M99 subprograms - and those mean the same thing on every FANUC lathe. Everything else (chuck clamp/unclamp, tailstock quill, parts catcher, wash gun, chip conveyor) is assigned by the machine BUILDER in the machine's ladder, so the numbers differ from machine to machine. The auxiliary codes this simulator accepts - M10/M11 chuck, M12/M13 tailstock, M21/M22 parts catcher, M50/M51 wash gun, M52/M53 conveyor - were inferred from the reference machine's operator panel, which shows the functions but not their numbers. TREAT THEM AS PLACEHOLDERS: they are very unlikely to match your machine. Check your machine's own M-code list and correct them (they live in one table in LatheSimulator.cs). Running an unverified auxiliary M-code on real iron is how people crash chucks."
+                Title = "Auxiliary M-Codes Are Machine-Specific (most of these are GUESSES)",
+                Body = "This simulator is modelled on a LEADWELL LTC-208 (serial L2TAG0843, built 2020) running a FANUC 0i-TF Plus. That matters here more than anywhere else in the control. FANUC defines the common M-codes - M00/M01/M02/M30 program control, M03/M04/M05 spindle, M08/M09 coolant, M19 orient, M98/M99 subprograms - and those mean the same thing on every FANUC lathe. Everything else (chuck clamp/unclamp, tailstock quill, parts catcher, wash gun, chip conveyor) is implemented in the machine BUILDER's PMC ladder, not in the CNC at all - so no FANUC manual can tell you what they are, only Leadwell's documentation for this machine can. Leadwell does not publish it openly. What that leaves: M10/M11 chuck clamp/unclamp is corroborated for Leadwell lathes by several independent operator reports, so it is likely right but is still not verified on THIS machine. M12/M13 tailstock, M21/M22 parts catcher, M50/M51 wash gun and M52/M53 conveyor are inferred from the operator panel, which shows the functions but not their numbers - the functions are certainly there, the numbers are guesses, and tailstock in particular is assigned as M12/M13, M21/M22 or M78/M79 depending on the builder. TWO WAYS TO GET THE REAL LIST: (1) Leadwell's operation manual for the LTC-208 - ask Leadwell or your dealer and quote the serial number. (2) Better, because it is ground truth rather than a description of it: read the machine's own PMC ladder on the control, SYSTEM then PMC then PMCLAD. The M-code decode instructions there name exactly which M numbers this machine implements. Correcting them here is a one-line edit per code in LatheSimulator.cs - nothing else in the engine hardcodes an auxiliary number. Running an unverified auxiliary M-code on real iron is how people crash chucks."
             },
             new SetupTip
             {

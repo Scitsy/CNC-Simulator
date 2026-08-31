@@ -1,4 +1,4 @@
-using FanucSimulator;
+﻿using FanucSimulator;
 
 int pass = 0, fail = 0;
 void Check(string label, bool condition)
@@ -1158,5 +1158,147 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
 }
 
 Console.WriteLine();
+// ---- [70] BLOCK SKIP honours the leading '/' ----
+{
+    Console.WriteLine("[70] BLOCK SKIP (BDT) honours a leading '/'");
+    var prog = "G21\nT0101\nG00 X50 Z10\n/G00 X20\nG00 Z5\nM30\n";
+
+    // Switch off: the slash means nothing and the block runs.
+    var off = new LatheSimulator();
+    RunFull(off, new GCodeParser().Parse(prog), out _);
+    Check("with BLOCK SKIP off the '/' block runs", Math.Abs(off.X - 20) < 1e-6);
+
+    // Switch on: the block is skipped, so X never leaves 50.
+    var on = new LatheSimulator { BlockSkip = true };
+    RunFull(on, new GCodeParser().Parse(prog), out _);
+    Check("with BLOCK SKIP on the '/' block is skipped", Math.Abs(on.X - 50) < 1e-6);
+    Check("the rest of the program still runs", Math.Abs(on.Z - 5) < 1e-6);
+
+    // The slash must not survive into the parsed block, or the tokenizer would see garbage.
+    var parsed = new GCodeParser().Parse("/G00 X20\n")[0];
+    Check("the '/' is stripped and flagged, not left in the code", parsed.IsBlockDelete && parsed.RawCode.StartsWith("G00"));
+    Check("a normal block is not flagged as block-delete", !new GCodeParser().Parse("G00 X20\n")[0].IsBlockDelete);
+}
+
+// ---- [71] OPT STOP arms M01 ----
+{
+    Console.WriteLine("[71] OPT STOP (OSP) decides whether M01 pauses");
+    var prog = "G21\nT0101\nG00 X50 Z10\nM01\nG00 X20\nM30\n";
+
+    var off = new LatheSimulator();
+    var offResult = off.RunProgram(new GCodeParser().Parse(prog), 0);
+    Check("with OPT STOP off M01 does not pause", !offResult.Paused && offResult.ProgramEnded);
+    Check("so the program runs to the end", Math.Abs(off.X - 20) < 1e-6);
+
+    var on = new LatheSimulator { OptionalStop = true };
+    var onResult = on.RunProgram(new GCodeParser().Parse(prog), 0);
+    Check("with OPT STOP on M01 pauses", onResult.Paused);
+    Check("and it pauses before the following move", Math.Abs(on.X - 50) < 1e-6);
+
+    on.RunProgram(new GCodeParser().Parse(prog), onResult.NextBlockIndex);
+    Check("resuming finishes the program", Math.Abs(on.X - 20) < 1e-6);
+}
+
+// ---- [72] SINGLE BLOCK steps one block at a time ----
+{
+    Console.WriteLine("[72] SINGLE BLOCK (SBK) stops after each block");
+    var prog = "G21\nT0101\nG00 X50 Z10\nG01 X40 F0.2\nG01 Z-5\nM30\n";
+
+    var continuous = new LatheSimulator();
+    RunFull(continuous, new GCodeParser().Parse(prog), out _);
+
+    var stepped = new LatheSimulator { SingleBlock = true };
+    var blocks = new GCodeParser().Parse(prog);
+    int steps = 0, next = 0;
+    while (steps < 50)
+    {
+        var r = stepped.RunProgram(blocks, next);
+        steps++;
+        if (r.ProgramEnded || !r.Paused) break;
+        next = r.NextBlockIndex;
+    }
+    Check("it takes more than one Cycle Start to finish", steps > 1);
+    Check("stepping reaches the same X as a continuous run", Math.Abs(stepped.X - continuous.X) < 1e-6);
+    Check("stepping reaches the same Z as a continuous run", Math.Abs(stepped.Z - continuous.Z) < 1e-6);
+    Check("it terminates rather than looping forever", steps < 50);
+}
+
+// ---- [73] Spindle speed is clamped to the machine maximum ----
+{
+    Console.WriteLine("[73] Spindle clamps to the machine maximum, not alarms");
+    var sim = new LatheSimulator();
+    var alarms = RunFull(sim, new GCodeParser().Parse("G21\nT0101\nG97 S9000\nM03\nM30\n"), out _);
+    Check("over-speed is not an alarm", alarms.Count == 0);
+    Check($"S9000 clamps to {MachineSpec.MaxSpindleRpm:F0}", Math.Abs(sim.SpindleSpeed - MachineSpec.MaxSpindleRpm) < 1e-6);
+
+    var under = new LatheSimulator();
+    RunFull(under, new GCodeParser().Parse("G21\nT0101\nG97 S1200\nM03\nM30\n"), out _);
+    Check("a speed under the limit is untouched", Math.Abs(under.SpindleSpeed - 1200) < 1e-6);
+
+    // Under CSS a small diameter asks for enormous rpm; the machine ceiling must still apply.
+    var css = new LatheSimulator();
+    RunFull(css, new GCodeParser().Parse("G21\nT0101\nG00 X2 Z2\nG96 S200\nM03\nM30\n"), out _);
+    Check("CSS is clamped by the machine ceiling too", css.SpindleSpeed <= MachineSpec.MaxSpindleRpm + 1e-6);
+}
+
+// ---- [74] The turret has as many stations as the machine ----
+{
+    Console.WriteLine("[74] Offset table covers every turret station");
+    var offsets = new OffsetTables();
+    Check($"{MachineSpec.TurretStations} stations exist", offsets.Tools.Count == MachineSpec.TurretStations);
+    Check("station 1 exists", offsets.Tools.ContainsKey(1));
+    Check("the last station exists", offsets.Tools.ContainsKey(MachineSpec.TurretStations));
+}
+
+Console.WriteLine();
+// ---- [75] O0015 actually demonstrates what its own comments claim ----
+{
+    Console.WriteLine("[75] O0015 panel-switch demo behaves as documented");
+    var text = File.ReadAllText(@"..\NCFiles\O0015_panel_switch_demo.nc");
+
+    var plain = new LatheSimulator();
+    var plainAlarms = RunFull(plain, new GCodeParser().Parse(text), out var plainWarnings);
+    Check("runs clean with every switch off", plainAlarms.Count == 0 && plainWarnings.Count == 0);
+
+    // BLOCK SKIP must change the outcome, or the '/' blocks in the file are decorative.
+    var skipped = new LatheSimulator { BlockSkip = true };
+    var skipAlarms = RunFull(skipped, new GCodeParser().Parse(text), out _);
+    Check("runs clean with BLOCK SKIP on too", skipAlarms.Count == 0);
+    Check("BLOCK SKIP leaves the OD fatter (a roughing pass was genuinely skipped)",
+          skipped.Stock.OuterX[NearestIndex(plain.Stock, -20)] >= plain.Stock.OuterX[NearestIndex(plain.Stock, -20)]);
+
+    // OPT STOP must actually stop, and resuming must reach the same place.
+    var stopping = new LatheSimulator { OptionalStop = true };
+    var blocks = new GCodeParser().Parse(text);
+    var r = stopping.RunProgram(blocks, 0);
+    Check("OPT STOP pauses the demo at its M01", r.Paused);
+    int guard = 0;
+    while (r.Paused && guard++ < 20)
+        r = stopping.RunProgram(blocks, r.NextBlockIndex);
+    Check("resuming runs it to the end", r.ProgramEnded);
+    Check("and lands where the uninterrupted run landed", Math.Abs(stopping.Z - plain.Z) < 1e-6);
+}
+
+// ---- [76] A saved offset file from an 8-station build still fills the whole turret ----
+{
+    Console.WriteLine("[76] Loading an older 8-station offset file backfills the turret");
+    var tmp = Path.Combine(Path.GetTempPath(), "fanuc_offsets_8station_test.json");
+
+    // Write a file describing only stations 1-8, exactly as an earlier build would have saved.
+    var trimmed = new OffsetTables();
+    foreach (var n in trimmed.Tools.Keys.Where(k => k > 8).ToList())
+        trimmed.Tools.Remove(n);
+    trimmed.SaveToFile(tmp);
+
+    var loaded = OffsetTables.LoadOrDefault(tmp);
+    Check("every turret station is present after loading an 8-station file",
+          loaded.Tools.Count == MachineSpec.TurretStations);
+    Check("the stations the file did not mention still exist",
+          loaded.Tools.ContainsKey(MachineSpec.TurretStations));
+    Check("a station the file did describe is preserved", loaded.Tools.ContainsKey(1));
+
+    File.Delete(tmp);
+}
+
 Console.WriteLine($"===== TOTAL: {pass} passed, {fail} failed =====");
 Environment.Exit(fail == 0 ? 0 : 1);

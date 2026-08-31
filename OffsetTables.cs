@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -60,13 +60,13 @@ namespace FanucSimulator
 
         public OffsetTables()
         {
-            for (int i = 1; i <= 8; i++)
+            for (int i = 1; i <= MachineSpec.TurretStations; i++)
                 Tools[i] = new ToolOffset { Number = i };
 
             // Sensible out-of-the-box defaults, matching the exact T1-T4 roles from the user's own
             // reference program (T1 OD/facing, T2 drill, T3 boring, T4 threading) so re-running it
             // doesn't trip a false tool-mismatch alarm against these defaults. Grooving goes in the
-            // unused T5 slot rather than displacing T4. T6-8 stay Undefined.
+            // unused T5 slot rather than displacing T4. T8 up to the turret's last station stay Undefined.
             Tools[1].AssignFromCatalog(ToolCatalog.Entries[0]);  // CNMG120404 OD turning/finishing
             Tools[2].AssignFromCatalog(ToolCatalog.Entries[17]); // HSS-8.0 twist drill
             Tools[3].AssignFromCatalog(ToolCatalog.Entries[6]);  // CCMT09T304 boring, medium reach

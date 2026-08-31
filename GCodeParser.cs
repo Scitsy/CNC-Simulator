@@ -39,6 +39,15 @@ namespace FanucSimulator
 
             // A line containing only "O####" defines a subprogram label.
             public bool IsLabel => Commands.Count == 0 && Params.Count == 1 && Params.ContainsKey("O");
+
+            // Leading '/' - "block delete" / "optional block skip". The block is skipped only while
+            // the operator has the BLOCK SKIP key on; with it off the slash means nothing and the
+            // line runs normally. Real controls support numbered skip levels (/2 through /9, each
+            // with its own switch); only the single unnumbered level is modelled here, so /2 is
+            // treated the same as /. Until now the parser dropped the slash silently, which meant
+            // a block-delete line always ran - worse than not supporting it, because the program
+            // looked like it was being honoured.
+            public bool IsBlockDelete { get; set; }
         }
 
         // \bEND\b alone wouldn't match "END1" - digits are word characters too, so there's no
@@ -54,6 +63,7 @@ namespace FanucSimulator
         private static readonly Regex ModalMacroStartPattern = new(@"(?<!\d)G0*66(?!\d)", RegexOptions.IgnoreCase);
         private static readonly Regex ModalMacroCancelPattern = new(@"(?<!\d)G0*67(?!\d)", RegexOptions.IgnoreCase);
         private static readonly Regex AddressWordPattern = new(@"([A-Z])([+-]?\d+\.?\d*)", RegexOptions.IgnoreCase);
+        private static readonly Regex BlockDeletePattern = new(@"^\s*/\d?\s*");
 
         public List<Block> Parse(string gcode)
         {
@@ -88,7 +98,17 @@ namespace FanucSimulator
         // usual meaning - a "T20" here is macro argument #20, not a tool change.
         public Block ParseLine(string code, int lineNumber, bool genericArgCapture = false)
         {
-            var block = new Block { Line = lineNumber, RawCode = code };
+            // Strip the block-delete prefix before tokenizing - '/' is not an address word, and
+            // leaving it in RawCode would confuse the macro interpreter's re-parse of this line.
+            var blockDelete = false;
+            var slash = BlockDeletePattern.Match(code);
+            if (slash.Success)
+            {
+                blockDelete = true;
+                code = code[slash.Length..].TrimStart();
+            }
+
+            var block = new Block { Line = lineNumber, RawCode = code, IsBlockDelete = blockDelete };
 
             if (!genericArgCapture)
             {

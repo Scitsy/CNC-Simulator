@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -13,6 +13,7 @@
          that only work when compiled into the same assembly as the test runner. -->
     <Compile Include="..\GCodeParser.cs" Link="GCodeParser.cs" />
     <Compile Include="..\ModalState.cs" Link="ModalState.cs" />
+    <Compile Include="..\MachineSpec.cs" Link="MachineSpec.cs" />
     <Compile Include="..\OffsetTables.cs" Link="OffsetTables.cs" />
     <Compile Include="..\ToolCatalog.cs" Link="ToolCatalog.cs" />
     <Compile Include="..\StockProfile.cs" Link="StockProfile.cs" />

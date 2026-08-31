@@ -1,10 +1,11 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
@@ -144,6 +145,7 @@ namespace FanucSimulator
                 _cycleSimulatedSeconds = 0;
             }
 
+            ApplyPanelSwitches();
             var blocks = _parser.Parse(GCodeInput.Text);
             var result = _sim.RunProgram(blocks, _resumeIndex);
 
@@ -159,7 +161,9 @@ namespace FanucSimulator
 
             _resumeIndex = result.Paused ? result.NextBlockIndex : 0;
             if (result.Paused)
-                Log("[Paused - press Execute to continue]", "info");
+                Log(_sim.SingleBlock
+                        ? "[SINGLE BLOCK - press Cycle Start for the next block]"
+                        : "[Paused - press Execute to continue]", "info");
 
             if (result.ProgramEnded)
                 _partCount++;
@@ -177,11 +181,13 @@ namespace FanucSimulator
             // Carries the current offset table forward - a real control's RESET clears the
             // run/alarm state but never touches the tool/work offset tables.
             _sim = new LatheSimulator(_sim.Offsets);
+            ApplyPanelSwitches(); // physical switches don't move when RESET is pressed
             _resumeIndex = 0;
             Console.Clear();
             _runSimulatedSeconds = 0;
             _cycleSimulatedSeconds = 0;
             _partCount = 0;
+            CoolantToggleButton.IsChecked = _sim.CoolantOn;
             RefreshStockUnitDisplay(force: true);
             UpdateDisplay();
             RenderLathe();
@@ -1285,6 +1291,9 @@ namespace FanucSimulator
             // Coolant belongs in the modal block as its M-code, the way a real control lists it -
             // spelling out "COOLANT ON/OFF" overflowed the column and isn't what the machine shows.
             ModalCoolantDisplay.Text = "M   " + (_sim.CoolantOn ? "08" : "09");
+            // M08/M09 in the program moves the coolant state too, so the panel lamp follows the
+            // engine rather than only the last click. Assigning IsChecked doesn't raise Click.
+            CoolantToggleButton.IsChecked = _sim.CoolantOn;
 
             // The M field on a real POS screen shows the M-code currently in effect; spindle
             // direction is the only continuously-held M state this simulator actually tracks.
@@ -1326,9 +1335,41 @@ namespace FanucSimulator
 
         private void CoolantToggle_Click(object sender, RoutedEventArgs e)
         {
-            _sim.CoolantOn = !_sim.CoolantOn;
+            _sim.CoolantOn = CoolantToggleButton.IsChecked == true;
             UpdateDisplay();
             RenderLathe();
+        }
+
+        // The three panel switches that actually change how a program runs. They latch across runs
+        // and across RESET, exactly as the physical switches do - nothing in the G-code can move
+        // them, and pressing RESET on a real control does not flip them back.
+        //
+        // Bound to Checked/Unchecked rather than Click on purpose. Click only fires for a mouse
+        // press, so a switch moved any other way - the keyboard, UI automation, a future MODE
+        // rotary driving it in code - would light its lamp while leaving the engine on the old
+        // setting. The lamp would then be lying about how the next run will behave, which is the
+        // one thing a panel indicator must never do.
+        private void PanelSwitch_Changed(object sender, RoutedEventArgs e)
+        {
+            ApplyPanelSwitches();
+            if (!IsLoaded || sender is not ToggleButton key)
+                return;
+
+            var name = key == SingleBlockKey ? "SINGLE BLOCK"
+                     : key == BlockSkipKey ? "BLOCK SKIP"
+                     : "OPT STOP";
+            Log($"{name} {(key.IsChecked == true ? "ON" : "OFF")}", "info");
+        }
+
+        // Called from the switch handlers, after RESET, and again immediately before every run.
+        // The panel is the source of truth; the engine's copy is only ever a snapshot of it.
+        private void ApplyPanelSwitches()
+        {
+            if (_sim == null)
+                return;
+            _sim.SingleBlock = SingleBlockKey.IsChecked == true;
+            _sim.BlockSkip = BlockSkipKey.IsChecked == true;
+            _sim.OptionalStop = OptStopKey.IsChecked == true;
         }
 
         private void EStop_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
