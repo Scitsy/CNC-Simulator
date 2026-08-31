@@ -893,7 +893,7 @@
                         <ToggleButton x:Name="OptStopKey" Content="OSP" Checked="PanelSwitch_Changed" Unchecked="PanelSwitch_Changed" Style="{StaticResource PanelToggleKey}" ToolTip="OPTIONAL STOP"/>
                         <Button Content="LAMP" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
                         <Button Content="DRN" Style="{StaticResource FunctionKey}" IsEnabled="False" ToolTip="DRY RUN"/>
-                        <Button Content="M.S.T" Style="{StaticResource FunctionKey}" IsEnabled="False" ToolTip="M/S/T LOCK"/>
+                        <Button Content="MST" Style="{StaticResource FunctionKey}" IsEnabled="False" ToolTip="M/S/T LOCK"/>
                         <Button Content="M.L.K" Style="{StaticResource FunctionKey}" IsEnabled="False" ToolTip="MACHINE LOCK"/>
                         <Button Content="BUZZER" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
                     </UniformGrid>
@@ -931,10 +931,13 @@
                     </UniformGrid>
 
                     <TextBlock Text="SPINDLE" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center" Margin="0,6,0,2"/>
+                    <!-- CW/STOP/CCW carry the same colour-coding on the real panel that O.T. does -
+                         green for the two motion keys, red for STOP, plain for JOG (spindle jog has
+                         no separate colour on the reference photo). -->
                     <UniformGrid Rows="2" Columns="4">
-                        <Button Content="CW" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                        <Button Content="CW" Style="{StaticResource FunctionKey}" IsEnabled="False" Background="#004400"/>
                         <Button Content="STOP" Style="{StaticResource FunctionKey}" IsEnabled="False" Background="#440000"/>
-                        <Button Content="CCW" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                        <Button Content="CCW" Style="{StaticResource FunctionKey}" IsEnabled="False" Background="#004400"/>
                         <Button Content="JOG" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
                         <Button Content="DEC" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
                         <Button Content="100%" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
