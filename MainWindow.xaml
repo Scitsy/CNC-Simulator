@@ -1035,6 +1035,21 @@
                      a close-up photo (2026-08-31): HANDLE KEY is a two-position switch labelled
                      MAINT. / AUTO, not a single unlabelled switch as first built. -->
                 <StackPanel Grid.Column="3" VerticalAlignment="Stretch">
+                    <!-- Main power ON ("I") / OFF ("0") - a close-up photo (2026-09-01) placed a lit
+                         green/red pushbutton pair here, above HANDLE KEY, with the IEC 60417 power
+                         symbols this and every other machine tool use. Decorative like the rest of
+                         this column - a software simulator has no mains contactor to actually
+                         switch - but it belongs here, not as a small icon buried near the logo. -->
+                    <StackPanel HorizontalAlignment="Center" Margin="0,0,0,10">
+                        <Border x:Name="PowerToggleButton" Width="26" Height="18" Background="{StaticResource OkGreen}" BorderBrush="#1a1a1a" BorderThickness="1"
+                                Cursor="Hand" MouseLeftButtonDown="PowerToggle_Click" Margin="0,0,0,3">
+                            <TextBlock Text="I" Foreground="#0a2a0a" FontWeight="Bold" FontSize="11" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <Border Width="26" Height="18" Background="#8a1f1f" BorderBrush="#1a1a1a" BorderThickness="1">
+                            <TextBlock Text="0" Foreground="#2a0a0a" FontWeight="Bold" FontSize="11" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                    </StackPanel>
+
                     <StackPanel HorizontalAlignment="Center" Margin="0,0,0,10">
                         <Ellipse Width="20" Height="20" Fill="#1a1a1a" Stroke="#999" StrokeThickness="1.5" HorizontalAlignment="Center"/>
                         <TextBlock Text="HANDLE KEY" Foreground="{StaticResource MutedText}" FontSize="6" TextAlignment="Center" Margin="0,2,0,0"/>
@@ -1051,10 +1066,6 @@
                     </StackPanel>
 
                     <StackPanel VerticalAlignment="Bottom" HorizontalAlignment="Right" Margin="0,20,0,0">
-                        <Border x:Name="PowerToggleButton" Width="30" Height="30" Background="#2a2a2a" BorderBrush="#666" BorderThickness="1"
-                                Cursor="Hand" MouseLeftButtonDown="PowerToggle_Click" Margin="0,0,0,10">
-                            <TextBlock Text="&#9211;" Foreground="{StaticResource OkGreen}" FontSize="14" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
                         <TextBlock Text="FANUC" Foreground="#c81414" FontWeight="Bold" FontSize="11" HorizontalAlignment="Right"/>
                     </StackPanel>
                 </StackPanel>
