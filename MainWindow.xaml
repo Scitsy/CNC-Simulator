@@ -987,8 +987,13 @@
                         </StackPanel>
                         <Canvas Width="92" Height="92">
                             <Ellipse Canvas.Left="21" Canvas.Top="21" Width="50" Height="50" Fill="#1a1a1a" Stroke="#777" StrokeThickness="1.5"/>
-                            <Line x:Name="ModePointer" X1="46" Y1="46" X2="46" Y2="26" Stroke="#29d629" StrokeThickness="2" Canvas.Left="0" Canvas.Top="0"
-                                  RenderTransformOrigin="0.5,0.5">
+                            <!-- CenterX/CenterY alone, deliberately no RenderTransformOrigin - the
+                                 two specify rotation center two different ways (RenderTransformOrigin
+                                 is relative to the Line's own tight bounding box, not the canvas) and
+                                 combining them rotates around neither point you'd expect. Found by the
+                                 pointer swinging to a visibly wrong position once TURRET moved off a
+                                 near-zero default angle and the bug stopped being invisible. -->
+                            <Line x:Name="ModePointer" X1="46" Y1="46" X2="46" Y2="26" Stroke="#29d629" StrokeThickness="2" Canvas.Left="0" Canvas.Top="0">
                                 <Line.RenderTransform>
                                     <RotateTransform x:Name="ModePointerRotation" CenterX="46" CenterY="46" Angle="-135"/>
                                 </Line.RenderTransform>
@@ -1002,27 +1007,20 @@
                     </StackPanel>
 
                     <TextBlock Text="TURRET" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center" Margin="0,0,0,3"/>
-                    <Canvas Width="90" Height="90" HorizontalAlignment="Center">
+                    <!-- Twenty-four addressable positions (MachineSpec.TurretStations) - the twelve
+                         physical pockets carry double-sided tool holders (confirmed by the machine's
+                         owner, 2026-09-01), so the T-word and this dial both run 1-24, not 1-12. The
+                         numbered ring is built in code-behind (BuildTurretDialRing) rather than
+                         hand-placed here - 24 hand-typed Canvas coordinates is exactly the kind of
+                         thing that quietly drifts out of sync with TurretStations the next time it
+                         changes. -->
+                    <Canvas x:Name="TurretDialCanvas" Width="90" Height="90" HorizontalAlignment="Center">
                         <Ellipse Canvas.Left="15" Canvas.Top="15" Width="60" Height="60" Fill="#1a1a1a" Stroke="#777" StrokeThickness="1.5"/>
-                        <!-- Twelve stations, matching this machine's actual turret (MachineSpec.
-                             TurretStations) - the dial graphic here is drawn for 12 whether or not
-                             that ever changes, rather than hardcoding the number twice. -->
-                        <TextBlock Text="1" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="42" Canvas.Top="2"/>
-                        <TextBlock Text="2" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="58" Canvas.Top="6"/>
-                        <TextBlock Text="3" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="70" Canvas.Top="18"/>
-                        <TextBlock Text="4" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="76" Canvas.Top="34"/>
-                        <TextBlock Text="5" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="76" Canvas.Top="50"/>
-                        <TextBlock Text="6" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="70" Canvas.Top="66"/>
-                        <TextBlock Text="7" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="58" Canvas.Top="78"/>
-                        <TextBlock Text="8" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="42" Canvas.Top="82"/>
-                        <TextBlock Text="9" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="26" Canvas.Top="78"/>
-                        <TextBlock Text="10" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="10" Canvas.Top="66"/>
-                        <TextBlock Text="11" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="6" Canvas.Top="50"/>
-                        <TextBlock Text="12" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="6" Canvas.Top="34"/>
                         <!-- Passive readout of the currently selected station, rotated in code
                              behind whenever CurrentTool changes - not a control. -->
+                        <!-- CenterX/CenterY alone - see the same note on ModePointer above. -->
                         <Line x:Name="TurretPointer" X1="45" Y1="45" X2="45" Y2="22" Stroke="#29d629" StrokeThickness="2.5"
-                              Canvas.Left="0" Canvas.Top="0" RenderTransformOrigin="0.5,0.5">
+                              Canvas.Left="0" Canvas.Top="0">
                             <Line.RenderTransform>
                                 <RotateTransform x:Name="TurretPointerRotation" CenterX="45" CenterY="45" Angle="0"/>
                             </Line.RenderTransform>

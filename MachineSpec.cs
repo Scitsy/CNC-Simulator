@@ -28,11 +28,14 @@ namespace FanucSimulator
         // invent a restriction the machine does not have.
         public const double MaxSpindleRpm = 4500;
 
-        // Turret. Twelve stations, servo-indexed. NOTE: the TURRET selector on the reference
-        // photo of this machine's operator panel is graduated 1-24 - Leadwell fits a common panel
-        // across models with larger turrets. The station count below follows the machine's
-        // specification, not the dial's printed range.
-        public const int TurretStations = 12;
+        // Turret. Twelve physical pockets, servo-indexed, but the tool holders are double-sided
+        // (confirmed by the machine's owner, 2026-09-01) - each pocket mounts two tools front/back,
+        // so the T-word addresses 24 positions, matching the panel's TURRET dial (which reads 1-24,
+        // not 1-12). TurretStations is the ADDRESSABLE count - what OffsetTables sizes itself to and
+        // what T-words actually select - not the physical pocket count, which is kept separately
+        // below purely for documentation.
+        public const int TurretStations = 24;
+        public const int TurretPhysicalPockets = 12;
 
         // Chuck and capacity, in inches - this machine is an inch machine (see ModalState.Units).
         public const double ChuckSizeInches = 8.0;

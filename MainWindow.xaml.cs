@@ -124,6 +124,7 @@ namespace FanucSimulator
             Directory.CreateDirectory(NCFilesPath);
             PopulateHelpScreen();
             BuildDualKeyGrid();
+            BuildTurretDialRing();
             LoadRecentFilesList();
             RefreshRecentFilesUi();
             SetMode("EDIT");
@@ -1342,11 +1343,12 @@ namespace FanucSimulator
             ProgramEndLed.Fill = _programEndLampOn ? litGreen : dimLed;
             SpindleActiveLed.Fill = _sim.SpindleDir != 0 ? litGreen : dimLed;
 
-            // Turret dial pointer follows the currently selected station (T-word), 30 degrees per
-            // of the machine's 12 stations - a readout, like the LEDs above, not a control.
+            // Turret dial pointer follows the currently selected station (T-word) - a readout, like
+            // the LEDs above, not a control. Shares TurretStartAngleDeg with BuildTurretDialRing so
+            // the pointer actually lines up with the number it's pointing at.
             var stationAngle = 360.0 / MachineSpec.TurretStations;
             var activeStation = _sim.CurrentTool >= 1 ? _sim.CurrentTool : 1;
-            TurretPointerRotation.Angle = (activeStation - 1) * stationAngle;
+            TurretPointerRotation.Angle = TurretStartAngleDeg + (activeStation - 1) * stationAngle;
 
             ProgramIdDisplay.Text = $"{CurrentProgramNumber()} N00000";
             AllProgramPreview.Text = ProgramPreviewText();
@@ -1748,6 +1750,39 @@ namespace FanucSimulator
                 AutomationProperties.SetAutomationId(button, "Key_" + primary);
                 button.Click += DualKey_Click;
                 DualKeyGrid.Children.Add(button);
+            }
+        }
+
+        // Lays MachineSpec.TurretStations numbered labels around the TURRET dial's rim, matching
+        // the real dial's arrangement (station 1 at roughly 7 o'clock, running clockwise) rather
+        // than 24 hand-typed Canvas coordinates that would drift out of sync the next time the
+        // station count changes.
+        // Station 1's position on the dial face, degrees clockwise from 12 o'clock - shared between
+        // the ring of number labels and the live pointer so the pointer actually lines up.
+        private const double TurretStartAngleDeg = 210;
+
+        private void BuildTurretDialRing()
+        {
+            const double centerX = 45, centerY = 45, radius = 36;
+            var step = 360.0 / MachineSpec.TurretStations;
+
+            for (int station = 1; station <= MachineSpec.TurretStations; station++)
+            {
+                var angleRad = (TurretStartAngleDeg + (station - 1) * step) * Math.PI / 180.0;
+                var x = centerX + radius * Math.Sin(angleRad);
+                var y = centerY - radius * Math.Cos(angleRad);
+
+                var label = new TextBlock
+                {
+                    Text = station.ToString(),
+                    FontSize = 6,
+                    Foreground = (Brush)FindResource("MutedText"),
+                };
+                // Rough centering for a 1-2 digit label at this font size - exact metrics aren't
+                // worth measuring for a decorative ring.
+                Canvas.SetLeft(label, x - (station >= 10 ? 5 : 2.5));
+                Canvas.SetTop(label, y - 4);
+                TurretDialCanvas.Children.Add(label);
             }
         }
 
