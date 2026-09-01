@@ -104,12 +104,17 @@ namespace FanucSimulator
         // Dual-legend MDI keypad keys, left-to-right/top-to-bottom matching the reference photo.
         // Some secondary legends are approximated where the source image was too small to read
         // with certainty; the primary (unshifted) character typed by each key is exact.
+        // Corrected against a full-resolution close-up of the reference machine's own keypad
+        // (2026-08-31) - several of these were wrong, not just approximated: EOB is its own key
+        // (row 4, col 3), not "3"'s secondary; "3"'s real secondary is "="; "4"/"5"'s secondaries
+        // were blank here but are really "[" and "W"; and row 4 cols 3-6 were a different, invented
+        // set of keys entirely (+/-/0/*/./=) that don't match what's actually printed.
         private static readonly (string Primary, string Secondary)[] DualKeys =
         {
             ("O","P"), ("N","Q"), ("G","R"), ("7","A"), ("8","B"), ("9","D"),
-            ("X","C"), ("Z","Y"), ("F","L"), ("4",""), ("5",""), ("6","SP"),
-            ("M","I"), ("S","K"), ("T","J"), ("1",","), ("2","#"), ("3","EOB"),
-            ("U","H"), ("W","V"), ("+","-"), ("0","*"), (".",""), ("=","")
+            ("X","C"), ("Z","Y"), ("F","L"), ("4","["), ("5","W"), ("6","SP"),
+            ("M","I"), ("S","K"), ("T","J"), ("1",","), ("2","#"), ("3","="),
+            ("U","H"), ("W","V"), ("EOB","E"), ("-","+"), ("0","*"), (".","/")
         };
 
         public MainWindow()
@@ -921,6 +926,21 @@ namespace FanucSimulator
             };
             if (active != null)
                 active.Background = new SolidColorBrush(Color.FromRgb(0x00, 0x44, 0x00));
+
+            // Rotates the MODE dial's pointer to this mode's real position on the physical rotary -
+            // EDIT/AUTO/MDI sit on its left arc (confirmed against a close-up photo, 2026-08-31).
+            // Only these three have angles because they're the only positions this engine can ever
+            // actually select; the dial's other five labels (TEACH/MPG/JOG/INC JOG/ZRN) are never
+            // pointed to, matching that they have no engine behaviour to select into.
+            var angle = mode switch
+            {
+                "EDIT" => 230.0,
+                "AUTO" => 280.0,
+                "MDI" => 330.0,
+                _ => (double?)null,
+            };
+            if (angle.HasValue)
+                ModePointerRotation.Angle = angle.Value;
         }
 
         private void ScreenButton_Click(object sender, RoutedEventArgs e)

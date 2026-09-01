@@ -970,25 +970,36 @@
                     </UniformGrid>
 
                     <TextBlock Text="MODE" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center" Margin="0,0,0,3"/>
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,6">
-                        <Button x:Name="ModeEditButton" Content="EDIT" Tag="EDIT" Click="ModeButton_Click" Style="{StaticResource PanelButton}" Padding="6,2" FontSize="10"/>
-                        <Button x:Name="ModeAutoButton" Content="AUTO" Tag="AUTO" Click="ModeButton_Click" Style="{StaticResource PanelButton}" Padding="6,2" FontSize="10"/>
-                        <Button x:Name="ModeMdiButton" Content="MDI" Tag="MDI" Click="ModeButton_Click" Style="{StaticResource PanelButton}" Padding="6,2" FontSize="10"/>
+                    <!-- On the real panel this is ONE eight-position rotary, not a button row plus a
+                         separate dial - a close-up photo (2026-08-31) confirmed it. MDI/AUTO/EDIT
+                         are printed flush down its left side (top to bottom, matching order here);
+                         TEACH/MPG/JOG/INC JOG/ZRN ring the rest of the face. Kept as a real
+                         hybrid rather than faked as one dial: MDI/AUTO/EDIT stay separately
+                         clickable (the only three positions this engine can actually honour),
+                         restyled to sit flush like the other five rather than as raised buttons.
+                         The other five have no engine behaviour (no manual jog/handle-wheel model
+                         exists) so they're a faithful static face, not a control. -->
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,8">
+                        <StackPanel VerticalAlignment="Center" Margin="0,0,4,0">
+                            <Button x:Name="ModeMdiButton" Content="MDI" Tag="MDI" Click="ModeButton_Click" Style="{StaticResource PanelButton}" Padding="4,1" Margin="0,0,0,3" FontSize="8"/>
+                            <Button x:Name="ModeAutoButton" Content="AUTO" Tag="AUTO" Click="ModeButton_Click" Style="{StaticResource PanelButton}" Padding="4,1" Margin="0,0,0,3" FontSize="8"/>
+                            <Button x:Name="ModeEditButton" Content="EDIT" Tag="EDIT" Click="ModeButton_Click" Style="{StaticResource PanelButton}" Padding="4,1" Margin="0" FontSize="8"/>
+                        </StackPanel>
+                        <Canvas Width="92" Height="92">
+                            <Ellipse Canvas.Left="21" Canvas.Top="21" Width="50" Height="50" Fill="#1a1a1a" Stroke="#777" StrokeThickness="1.5"/>
+                            <Line x:Name="ModePointer" X1="46" Y1="46" X2="46" Y2="26" Stroke="#29d629" StrokeThickness="2" Canvas.Left="0" Canvas.Top="0"
+                                  RenderTransformOrigin="0.5,0.5">
+                                <Line.RenderTransform>
+                                    <RotateTransform x:Name="ModePointerRotation" CenterX="46" CenterY="46" Angle="-135"/>
+                                </Line.RenderTransform>
+                            </Line>
+                            <TextBlock Text="TEACH" Foreground="{StaticResource MutedText}" FontSize="6" Canvas.Left="0" Canvas.Top="14"/>
+                            <TextBlock Text="MPG" Foreground="{StaticResource MutedText}" FontSize="6" Canvas.Left="66" Canvas.Top="14"/>
+                            <TextBlock Text="JOG" Foreground="{StaticResource MutedText}" FontSize="6" Canvas.Left="74" Canvas.Top="44"/>
+                            <TextBlock Text="INC&#10;JOG" Foreground="{StaticResource MutedText}" FontSize="6" Canvas.Left="62" Canvas.Top="66" TextAlignment="Center"/>
+                            <TextBlock Text="ZRN" Foreground="{StaticResource MutedText}" FontSize="6" Canvas.Left="34" Canvas.Top="80"/>
+                        </Canvas>
                     </StackPanel>
-
-                    <!-- The rotary half of MODE: TEACH/MPG/JOG/INC JOG/ZRN. None have engine behaviour
-                         (no manual jogging or handle-wheel model exists), so the dial is a faithful
-                         static face, not a control - turning a physical knob isn't something a mouse
-                         click can honestly stand in for anyway. -->
-                    <Canvas Width="110" Height="90" HorizontalAlignment="Center" Margin="0,0,0,8">
-                        <Ellipse Canvas.Left="27" Canvas.Top="12" Width="56" Height="56" Fill="#1a1a1a" Stroke="#777" StrokeThickness="1.5"/>
-                        <Line X1="55" Y1="40" X2="70" Y2="26" Stroke="#999" StrokeThickness="2" Canvas.Left="0" Canvas.Top="0"/>
-                        <TextBlock Text="TEACH" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="2" Canvas.Top="8"/>
-                        <TextBlock Text="MPG" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="80" Canvas.Top="8"/>
-                        <TextBlock Text="JOG" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="88" Canvas.Top="38"/>
-                        <TextBlock Text="INC JOG" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="72" Canvas.Top="66"/>
-                        <TextBlock Text="ZRN" Foreground="{StaticResource MutedText}" FontSize="7" Canvas.Left="4" Canvas.Top="66"/>
-                    </Canvas>
 
                     <TextBlock Text="TURRET" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center" Margin="0,0,0,3"/>
                     <Canvas Width="90" Height="90" HorizontalAlignment="Center">
@@ -1020,11 +1031,15 @@
                 </StackPanel>
 
                 <!-- Far right: key switches (decorative - a real key switch isn't something a mouse
-                     click can honestly stand in for either) and the power/logo stack -->
+                     click can honestly stand in for either) and the power/logo stack. Labels match
+                     a close-up photo (2026-08-31): HANDLE KEY is a two-position switch labelled
+                     MAINT. / AUTO, not a single unlabelled switch as first built. -->
                 <StackPanel Grid.Column="3" VerticalAlignment="Stretch">
                     <StackPanel HorizontalAlignment="Center" Margin="0,0,0,10">
                         <Ellipse Width="20" Height="20" Fill="#1a1a1a" Stroke="#999" StrokeThickness="1.5" HorizontalAlignment="Center"/>
-                        <TextBlock Text="HANDLE&#10;KEY" Foreground="{StaticResource MutedText}" FontSize="7" TextAlignment="Center" Margin="0,2,0,0"/>
+                        <TextBlock Text="HANDLE KEY" Foreground="{StaticResource MutedText}" FontSize="6" TextAlignment="Center" Margin="0,2,0,0"/>
+                        <TextBlock Text="MAINT." Foreground="{StaticResource MutedText}" FontSize="6" TextAlignment="Center"/>
+                        <TextBlock Text="&#8658; AUTO" Foreground="{StaticResource MutedText}" FontSize="6" TextAlignment="Center"/>
                     </StackPanel>
                     <StackPanel HorizontalAlignment="Center" Margin="0,0,0,10">
                         <Ellipse Width="20" Height="20" Fill="#1a1a1a" Stroke="#999" StrokeThickness="1.5" HorizontalAlignment="Center"/>
