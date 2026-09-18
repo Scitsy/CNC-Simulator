@@ -121,6 +121,7 @@ namespace FanucSimulator
         {
             InitializeComponent();
             ToolCatalog.LoadCustomEntries(CustomCatalogPath);
+            LoadMachineParameters();
             Directory.CreateDirectory(NCFilesPath);
             PopulateHelpScreen();
             BuildDualKeyGrid();
@@ -978,6 +979,7 @@ namespace FanucSimulator
             AlarmScreen.Visibility = screen == "ALARM" ? Visibility.Visible : Visibility.Collapsed;
             MacroScreen.Visibility = screen == "MACRO" ? Visibility.Visible : Visibility.Collapsed;
             HelpScreen.Visibility = screen == "HELP" ? Visibility.Visible : Visibility.Collapsed;
+            SystemScreen.Visibility = screen == "SYSTEM" ? Visibility.Visible : Visibility.Collapsed;
 
             foreach (var button in new[] { PosTabButton, ProgramTabButton, OffsetTabButton, AlarmTabButton, MacroTabButton, HelpTabButton })
                 button.Style = (Style)FindResource("SoftKeyButton");
@@ -1003,6 +1005,8 @@ namespace FanucSimulator
                 RefreshMacroScreen();
             if (screen == "POS")
                 UpdateDisplay();
+            if (screen == "SYSTEM")
+                RefreshSystemScreen();
 
             // Switching top-level screens always returns the hardware softkey row to that screen's
             // base menu - matches how a real control drops any FOLDER/OPRT sub-navigation the moment
@@ -1491,6 +1495,7 @@ namespace FanucSimulator
             _sim.SingleBlock = SingleBlockKey.IsChecked == true;
             _sim.BlockSkip = BlockSkipKey.IsChecked == true;
             _sim.OptionalStop = OptStopKey.IsChecked == true;
+            ApplyMachineParameters();
         }
 
         private void EStop_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
@@ -1581,6 +1586,41 @@ namespace FanucSimulator
         // it simply draws the playback cursor's moment instead of the engine's end state.
         private void RenderLathe() => RenderLathe(CurrentLatheView());
 
+        // One Path per finish colour (cheap enough to redraw every playback frame), drawn between
+        // neighbouring samples that both have a tracked finish; the rougher of the two sets the colour.
+        private void AddFinishPaths(StockProfile stock, double[] profile, double[] finish, Func<double, double> pxX, Func<double, double> pxY)
+        {
+            var byColor = new Dictionary<Color, StreamGeometry>();
+            var contexts = new Dictionary<Color, StreamGeometryContext>();
+            for (int i = 0; i < StockProfile.Resolution; i++)
+            {
+                if (double.IsNaN(finish[i]) || double.IsNaN(finish[i + 1]))
+                    continue;
+                var color = FinishColor(Math.Max(finish[i], finish[i + 1]));
+                if (!contexts.TryGetValue(color, out var ctx))
+                {
+                    var geometry = new StreamGeometry();
+                    byColor[color] = geometry;
+                    ctx = contexts[color] = geometry.Open();
+                }
+                ctx.BeginFigure(new Point(pxX(stock.SampleZ(i)), pxY(profile[i])), false, false);
+                ctx.LineTo(new Point(pxX(stock.SampleZ(i + 1)), pxY(profile[i + 1])), true, false);
+            }
+            foreach (var (color, geometry) in byColor)
+            {
+                contexts[color].Close();
+                geometry.Freeze();
+                LatheCanvas.Children.Add(new System.Windows.Shapes.Path
+                {
+                    Data = geometry,
+                    Stroke = new SolidColorBrush(color),
+                    StrokeThickness = 3,
+                    StrokeStartLineCap = PenLineCap.Round,
+                    StrokeEndLineCap = PenLineCap.Round,
+                });
+            }
+        }
+
         private void RenderLathe(LatheView view)
         {
             LatheCanvas.Children.Clear();
@@ -1669,6 +1709,13 @@ namespace FanucSimulator
                 StrokeThickness = 2
             };
             LatheCanvas.Children.Add(workpiece);
+
+            // Surface finish: the cut surface redrawn over the outline in its roughness colour.
+            if (ShowFinish)
+            {
+                AddFinishPaths(stock, stock.OuterX, stock.OuterRa, PxX, PxY);
+                AddFinishPaths(stock, stock.InnerX, stock.InnerRa, PxX, PxY);
+            }
 
             // Chuck/spindle indicator at the stock's held (-Z) end, to the left - taller than the
             // stock OD, sitting on the same centerline baseline.

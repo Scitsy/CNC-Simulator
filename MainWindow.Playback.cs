@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -88,7 +88,7 @@ namespace FanucSimulator
                 drawn.Add((seg.X1, seg.Z1, seg.Type));
                 drawn.Add((seg.X2, seg.Z2, seg.Type));
             }
-            return new Stock3DView(lathe.Stock, drawn, lathe.ToolRender, _sim.ToolPath);
+            return new Stock3DView(lathe.Stock, drawn, lathe.ToolRender, _sim.ToolPath, ShowFinish);
         }
 
         private void AddSegmentPath(

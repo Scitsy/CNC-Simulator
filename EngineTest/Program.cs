@@ -37,6 +37,8 @@ List<Alarm> RunFull(LatheSimulator sim, List<GCodeParser.Block> blocks, out List
 // Runs a program to the end like RunFull, checking after every chunk that the playback timeline
 // the engine recorded is faithful to what the engine actually did. Returns the number of chunks, or
 // -1 on the first broken invariant (with the reason printed), so each caller can Check() it.
+static bool SameRa(double a, double b) => (double.IsNaN(a) && double.IsNaN(b)) || a == b;
+
 int CheckTimelinesThroughout(LatheSimulator sim, List<GCodeParser.Block> blocks, string label)
 {
     int next = 0, chunks = 0;
@@ -81,6 +83,9 @@ int CheckTimelinesThroughout(LatheSimulator sim, List<GCodeParser.Block> blocks,
             for (int i = 0; problem == null && i <= StockProfile.Resolution; i++)
                 if (cursor.Stock.OuterX[i] != sim.Stock.OuterX[i] || cursor.Stock.InnerX[i] != sim.Stock.InnerX[i])
                     problem = $"replayed stock differs from engine stock at sample {i}";
+            for (int i = 0; problem == null && i <= StockProfile.Resolution; i++)
+                if (!SameRa(cursor.Stock.OuterRa[i], sim.Stock.OuterRa[i]) || !SameRa(cursor.Stock.InnerRa[i], sim.Stock.InnerRa[i]))
+                    problem = $"replayed finish differs from engine finish at sample {i}";
 
             // 5. At the end the tool is where the engine left it, and the whole log is revealed.
             if (problem == null && tl.Events.Count > 0 && cursor.ToolProgrammed is { } end &&
@@ -977,7 +982,11 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
     var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
     Console.WriteLine("[51] G01 under G99 (per-rev feed + RPM): exact expected seconds");
     Check("no alarms", alarms.Count == 0);
-    Check("15.6s (52mm @ 200mm/min effective)", Math.Abs(sim.SimulatedSecondsElapsed - 15.6) < 0.001);
+    // With SAR on (the default) the control first waits for the spindle to ramp 0 -> 1000 RPM at
+    // 4500 RPM per 3s (1500 RPM/s): 0.667s, then the cut at full speed.
+    var sarWait = 1000.0 / (MachineSpec.MaxSpindleRpm / MachineSpec.SpindleRampSecondsTypical);
+    Check($"{15.6 + sarWait:F4}s (SAR wait {sarWait:F4}s + 52mm @ 200mm/min effective)",
+        Math.Abs(sim.SimulatedSecondsElapsed - (15.6 + sarWait)) < 0.001);
 }
 
 // 52. G00 rapid move - against this machine's real 500 in/min rapid traverse. Programmed in inch so
@@ -1748,6 +1757,67 @@ Console.WriteLine();
     // Doubling back along Z is never allowed, type II included.
     var backZ = Rough("N10 G00 X30 Z2", "N20 G01 Z-20\nN30 X40 Z-15\nN90 G01 Z-50");
     Check("a profile that doubles back along Z: PS0064, even as type II", backZ.Any(a => a.Number == 64));
+}
+
+// ---- [88] Spindle ramp and surface finish ----
+{
+    Console.WriteLine("[88] Spindle ramp: SAR waits for speed; without it the start of a cut is rough");
+    var rate = MachineSpec.MaxSpindleRpm / MachineSpec.SpindleRampSecondsTypical;
+
+    // The model itself: 0 -> 1500 RPM at 1500 RPM/s takes 1s and turns 12.5 revs (average 750 RPM).
+    var model = new SpindleModel(rate);
+    Check("ramp: 0 -> 1500 RPM takes 1s", Math.Abs(model.SecondsToReach(1500) - 1.0) < 1e-12);
+    Check("ramp: 12.5 revolutions in that first second", Math.Abs(model.RevolutionsOver(1.0, 1500) - 12.5) < 1e-9);
+    Check("ramp: and back - 12.5 revs take 1s", Math.Abs(model.SecondsForRevolutions(12.5, 1500) - 1.0) < 1e-9);
+    Check("ramp: 37.5 revs = 1s ramping + 1s at 1500", Math.Abs(model.SecondsForRevolutions(37.5, 1500) - 2.0) < 1e-9);
+    var reversing = new SpindleModel(rate) { ActualRpm = 1500 };
+    Check("reversal ramps down through zero: M03 1500 -> M04 1500 takes 2s", Math.Abs(reversing.SecondsToReach(-1500) - 2.0) < 1e-12);
+    Check("reversal: 25 revs over those 2s (12.5 down, 12.5 up)", Math.Abs(reversing.RevolutionsOver(2.0, -1500) - 25) < 1e-9);
+
+    // The same cut straight after M03, with SAR on and off. G99 at 0.2mm/rev, R0.4 nose (T1).
+    const string Cut = "G21\nG99\nT0101\nM03 S1500\nG00 X40 Z1\nG01 Z-40 F0.2\nM30\n";
+    LatheSimulator RunCut(bool sar)
+    {
+        var s = new LatheSimulator { StockDiameter = 50, StockLength = 60, SpindleSpeedArrivalCheck = sar };
+        s.ResetStockProfile();
+        s.RunProgram(new GCodeParser().Parse(Cut));
+        return s;
+    }
+    var withSar = RunCut(true);
+    var noSar = RunCut(false);
+    var steadyRa = 0.2 * 0.2 / (32 * 0.4) * 1000; // 3.125 um
+    double RaAt(LatheSimulator s, double z) => s.Stock.OuterRa[NearestIndex(s.Stock, z)];
+
+    Check("SAR on: the control waited for the spindle", withSar.Messages.Any(m => m.StartsWith("SAR: waiting")));
+    Check("SAR on: the whole cut has the steady finish, Ra = f^2/32r = 3.125um",
+        Math.Abs(RaAt(withSar, -1) - steadyRa) < 1e-9 && Math.Abs(RaAt(withSar, -35) - steadyRa) < 1e-9);
+    Check("SAR off: no wait, and the log says the cut started before speed",
+        !noSar.Messages.Any(m => m.StartsWith("SAR: waiting")) && noSar.Messages.Any(m => m.StartsWith("Cutting before the spindle")));
+    Check("SAR off: the start of the cut is rougher than steady", RaAt(noSar, -0.5) > steadyRa * 1.5);
+    Check("SAR off: once up to speed the finish is steady again", Math.Abs(RaAt(noSar, -35) - steadyRa) < 1e-9);
+    Check("SAR off: the cut takes longer than steady, the tool crawling while the spindle is slow",
+        noSar.SimulatedSecondsElapsed > 41.0 / (0.2 * 1500) * 60);
+    Check("the end-of-program summary names the roughest finish",
+        noSar.Messages.Any(m => m.StartsWith("Surface finish: roughest Ra")));
+
+    // G98 (per-minute) feed doesn't follow the spindle: a slow spindle means more feed per rev.
+    var perMin = new LatheSimulator { StockDiameter = 50, StockLength = 60, SpindleSpeedArrivalCheck = false };
+    perMin.ResetStockProfile();
+    perMin.RunProgram(new GCodeParser().Parse("G21\nG98\nT0101\nM03 S1500\nG00 X40 Z1\nG01 Z-40 F300\nM30\n"));
+    Check("G98 with SAR off: rough start, steady (F300/1500 = 0.2mm/rev) once at speed",
+        RaAt(perMin, -0.5) > steadyRa * 1.5 && Math.Abs(RaAt(perMin, -35) - steadyRa) < 1e-9);
+
+    // A ramp of 0 is an instant spindle: no wait, and the finish is steady from the first mm.
+    var instant = new LatheSimulator { StockDiameter = 50, StockLength = 60, SpindleSpeedArrivalCheck = false, SpindleRampSeconds = 0 };
+    instant.ResetStockProfile();
+    instant.RunProgram(new GCodeParser().Parse(Cut));
+    Check("ramp 0: steady finish from the start", Math.Abs(RaAt(instant, -0.5) - steadyRa) < 1e-9);
+
+    // Replay reproduces the rough start exactly (the shared timeline invariants, finish included).
+    var replay = new LatheSimulator { StockDiameter = 50, StockLength = 60, SpindleSpeedArrivalCheck = false };
+    replay.ResetStockProfile();
+    Check("SAR off: playback replays the ramped cut and its finish exactly",
+        CheckTimelinesThroughout(replay, new GCodeParser().Parse(Cut), "SAR off cut") == 1);
 }
 
 Console.WriteLine($"===== TOTAL: {pass} passed, {fail} failed =====");

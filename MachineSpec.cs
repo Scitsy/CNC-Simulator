@@ -1,4 +1,4 @@
-namespace FanucSimulator
+﻿namespace FanucSimulator
 {
     // The specific machine this simulator is modelled on, supplied by its owner on 2026-08-25:
     //
@@ -40,6 +40,11 @@ namespace FanucSimulator
         // long as its longer axis needs at this rate.
         public const double RapidTraverseInchesPerMin = 500;
         public const double RapidTraverseMmPerMin = RapidTraverseInchesPerMin * 25.4;
+
+        // Spindle ramp: seconds from stopped to MaxSpindleRpm. NOT measured on this machine - a
+        // typical figure for a spindle this size, chosen with the owner (2026-09-18) as a starting
+        // point to replace once the real machine is timed. Adjustable on the SYSTEM screen.
+        public const double SpindleRampSecondsTypical = 3.0;
 
         // Turret. Twelve physical pockets, servo-indexed, but the tool holders are double-sided
         // (confirmed by the machine's owner, 2026-09-01) - each pocket mounts two tools front/back,

@@ -54,6 +54,12 @@ runs real conditionals and loops, not just token substitution.
   halts just before a rapid that would hit the part and shows the move it was about to make. Under
   the hood the engine still runs each program instantly and records a timeline of what it did; the
   replay is checked in the test suite to reproduce the engine's part exactly.
+- **Spindle ramp and surface finish**: the spindle accelerates to each commanded speed rather than
+  jumping there (3 s to 4500 RPM by default, adjustable on the SYSTEM screen). With parameter 3708#0
+  (SAR) set, the control waits for the spindle before each cut; with it clear, cutting starts at once
+  and the first stretch of the cut is taken below speed. Every turned and bored surface records its
+  roughness (Ra, from feed per rev and nose radius, worse when cut below speed), shown as colour
+  bands on the 2D canvas and the 3D view, with the roughest spot reported at the end of the program.
 - **Realistic cycle-time simulation**: RUN TIME/CYCLE TIME on the POS ALL screen are computed from
   actual commanded physics (feed rate over the tool's real path - X is a diameter, so the tool
   travels half of it - true arc length for G02/G03, G04 dwell duration, and the machine's real
@@ -118,7 +124,7 @@ A few worth starting with:
 ## Testing
 
 `EngineTest/` is a headless console harness (source-linked against the same engine files, no test
-framework dependency) with 339 hand-rolled assertions covering every documented G/M-code, both
+framework dependency) with 355 hand-rolled assertions covering every documented G/M-code, both
 canned-cycle directions, macro control flow, geometry checks against several of the demo programs
 above, the catalog-persistence round-trip, and exact closed-form cycle-time checks. Runs
 automatically on every push via GitHub Actions (see the badge at the top of this file).

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Media.Media3D;
 
 namespace FanucSimulator
@@ -28,7 +29,8 @@ namespace FanucSimulator
         StockProfile Stock,
         List<(double X, double Z, string Type)> ToolPath,      // drawn: (from, to) pairs
         (double X, double Z) ToolRender,                         // where the tool actually is
-        List<(double X, double Z, string Type)> FramingPath);   // the whole run, for camera framing
+        List<(double X, double Z, string Type)> FramingPath,    // the whole run, for camera framing
+        bool ShowFinish);                                        // colour cut surfaces by roughness
 
     public partial class Stock3DWindow : Window
     {
@@ -121,8 +123,15 @@ namespace FanucSimulator
             var angleSpan = cutaway ? Math.PI : 2 * Math.PI;
             var cutStartAngle = _azimuth + Math.PI / 2;
 
-            var outerMesh = BuildRevolvedMesh(stock, i => stock.OuterX[i], inward: false, segments, angleSpan, cutStartAngle);
-            group.Children.Add(new GeometryModel3D(outerMesh, stockMaterial) { BackMaterial = stockMaterial });
+            // Surface finish: each ring of the revolved surface takes its roughness colour from a
+            // small palette texture; uncut rings stay the plain stock grey.
+            var finishMaterial = view.ShowFinish ? BuildFinishMaterial() : null;
+            Func<int, double>? outerFinish = view.ShowFinish ? i => FinishU(StripRa(stock.OuterRa[i], stock.OuterRa[i + 1])) : null;
+            Func<int, double>? innerFinish = view.ShowFinish ? i => FinishU(StripRa(stock.InnerRa[i], stock.InnerRa[i + 1])) : null;
+
+            var outerMesh = BuildRevolvedMesh(stock, i => stock.OuterX[i], inward: false, segments, angleSpan, cutStartAngle, outerFinish);
+            var outerMaterial = finishMaterial ?? stockMaterial;
+            group.Children.Add(new GeometryModel3D(outerMesh, outerMaterial) { BackMaterial = outerMaterial });
 
             var hasBore = false;
             for (int i = 0; i <= StockProfile.Resolution; i++)
@@ -130,8 +139,9 @@ namespace FanucSimulator
 
             if (hasBore)
             {
-                var innerMesh = BuildRevolvedMesh(stock, i => stock.InnerX[i], inward: true, segments, angleSpan, cutStartAngle);
-                group.Children.Add(new GeometryModel3D(innerMesh, stockMaterial) { BackMaterial = stockMaterial });
+                var innerMesh = BuildRevolvedMesh(stock, i => stock.InnerX[i], inward: true, segments, angleSpan, cutStartAngle, innerFinish);
+                var innerMaterial = finishMaterial ?? stockMaterial;
+                group.Children.Add(new GeometryModel3D(innerMesh, innerMaterial) { BackMaterial = innerMaterial });
             }
 
             // Face-end cap (Z=0, the stock's ZEnd) - only if that end isn't bored fully through.
@@ -192,8 +202,64 @@ namespace FanucSimulator
         // the solid open instead of wrapping all the way around). `inward` reverses triangle winding
         // so the surface's computed normals face toward the axis (correct for a bore's inside wall)
         // instead of away from it.
-        private static MeshGeometry3D BuildRevolvedMesh(StockProfile stock, Func<int, double> diameterAt, bool inward, int segments, double angleSpan, double startAngle = 0)
+        // Finish palette: column 0 is the plain stock colour, 1-4 the roughness grades (see
+        // MainWindow.FinishColor). A ring's texture U picks its column's centre.
+        private static readonly double[] FinishGradeLimits = { 1.6, 3.2, 6.3 };
+        private const int FinishPaletteColumns = 5;
+
+        // The band between two rings takes the rougher tracked finish of the two (NaN only if
+        // neither end was cut) - the same rule the 2D canvas uses for its lines.
+        private static double StripRa(double a, double b) =>
+            double.IsNaN(a) ? b : double.IsNaN(b) ? a : Math.Max(a, b);
+
+        private static double FinishU(double ra)
         {
+            int column;
+            if (double.IsNaN(ra))
+                column = 0;
+            else
+            {
+                column = FinishPaletteColumns - 1;
+                for (int g = 0; g < FinishGradeLimits.Length; g++)
+                    if (ra <= FinishGradeLimits[g]) { column = g + 1; break; }
+            }
+            return (column + 0.5) / FinishPaletteColumns;
+        }
+
+        private static Material BuildFinishMaterial()
+        {
+            var colors = new[]
+            {
+                Color.FromRgb(150, 155, 160),
+                MainWindow.FinishColor(1.6), MainWindow.FinishColor(3.2), MainWindow.FinishColor(6.3), MainWindow.FinishColor(100),
+            };
+            var bitmap = new WriteableBitmap(FinishPaletteColumns, 1, 96, 96, PixelFormats.Bgra32, null);
+            var pixels = new byte[FinishPaletteColumns * 4];
+            for (int i = 0; i < colors.Length; i++)
+                (pixels[i * 4], pixels[i * 4 + 1], pixels[i * 4 + 2], pixels[i * 4 + 3]) = (colors[i].B, colors[i].G, colors[i].R, 255);
+            bitmap.WritePixels(new Int32Rect(0, 0, FinishPaletteColumns, 1), pixels, FinishPaletteColumns * 4, 0);
+
+            // Absolute 0..1 mapping: by default WPF stretches a brush over the bounding box of the
+            // texture coordinates actually used, which would shift every colour whenever only some
+            // grades are present.
+            var brush = new ImageBrush(bitmap) { ViewportUnits = BrushMappingMode.Absolute, Viewport = new Rect(0, 0, 1, 1) };
+            RenderOptions.SetBitmapScalingMode(brush, BitmapScalingMode.NearestNeighbor);
+
+            var material = new MaterialGroup();
+            material.Children.Add(new DiffuseMaterial(brush));
+            material.Children.Add(new SpecularMaterial(new SolidColorBrush(Color.FromRgb(200, 200, 210)), 60));
+            return material;
+        }
+
+        // With stripUAt (surface finish), each band between two rings gets its own pair of rings of
+        // vertices carrying one flat colour. Shared rings would blend the palette across the band -
+        // e.g. an uncut grey ring next to a cut one smeared through green on every shoulder.
+        private static MeshGeometry3D BuildRevolvedMesh(StockProfile stock, Func<int, double> diameterAt, bool inward, int segments, double angleSpan, double startAngle = 0,
+                                                        Func<int, double>? stripUAt = null)
+        {
+            if (stripUAt != null)
+                return BuildRevolvedStrips(stock, diameterAt, inward, segments, angleSpan, startAngle, stripUAt);
+
             var mesh = new MeshGeometry3D();
             int rings = StockProfile.Resolution + 1;
             var closed = angleSpan >= 2 * Math.PI - 1e-6;
@@ -233,6 +299,51 @@ namespace FanucSimulator
                 }
             }
 
+            return mesh;
+        }
+
+        private static MeshGeometry3D BuildRevolvedStrips(StockProfile stock, Func<int, double> diameterAt, bool inward, int segments, double angleSpan, double startAngle,
+                                                          Func<int, double> stripUAt)
+        {
+            var mesh = new MeshGeometry3D();
+            var closed = angleSpan >= 2 * Math.PI - 1e-6;
+            var pointsPerRing = closed ? segments : segments + 1;
+
+            for (int i = 0; i < StockProfile.Resolution; i++)
+            {
+                var u = stripUAt(i);
+                var baseIndex = mesh.Positions.Count;
+                for (int ring = 0; ring < 2; ring++)
+                {
+                    var x = stock.SampleZ(i + ring);
+                    var radius = diameterAt(i + ring) / 2.0;
+                    for (int j = 0; j < pointsPerRing; j++)
+                    {
+                        var angle = startAngle + j * angleSpan / segments;
+                        mesh.Positions.Add(new Point3D(x, radius * Math.Cos(angle), radius * Math.Sin(angle)));
+                        mesh.TextureCoordinates.Add(new Point(u, 0.5));
+                    }
+                }
+
+                for (int j = 0; j < segments; j++)
+                {
+                    var jNext = closed ? (j + 1) % pointsPerRing : j + 1;
+                    var a = baseIndex + j;
+                    var b = baseIndex + jNext;
+                    var c = baseIndex + pointsPerRing + j;
+                    var d = baseIndex + pointsPerRing + jNext;
+                    if (!inward)
+                    {
+                        mesh.TriangleIndices.Add(a); mesh.TriangleIndices.Add(c); mesh.TriangleIndices.Add(b);
+                        mesh.TriangleIndices.Add(b); mesh.TriangleIndices.Add(c); mesh.TriangleIndices.Add(d);
+                    }
+                    else
+                    {
+                        mesh.TriangleIndices.Add(a); mesh.TriangleIndices.Add(b); mesh.TriangleIndices.Add(c);
+                        mesh.TriangleIndices.Add(b); mesh.TriangleIndices.Add(d); mesh.TriangleIndices.Add(c);
+                    }
+                }
+            }
             return mesh;
         }
 

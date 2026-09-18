@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 
 namespace FanucSimulator
 {
@@ -10,6 +10,7 @@ namespace FanucSimulator
 
     // The machine state the screen shows alongside motion. Captured whenever something is recorded,
     // so playback can show what was true at that moment rather than what is true at the end.
+    // SpindleRpm is the spindle's actual speed then, which lags the commanded speed while it ramps.
     public readonly record struct MachineStateSnapshot(
         double SpindleRpm, int SpindleDir, bool CoolantOn, int Tool, double FeedRate, bool Inch, bool FeedPerRev,
         MotionMode Motion, CutterComp Comp, int WorkOffset, bool Css);
@@ -44,6 +45,13 @@ namespace FanucSimulator
         public double CarveX1 { get; init; }
         public double CarveZ2 { get; init; }
         public double CarveX2 { get; init; }
+
+        // The finish (Ra, micrometres; NaN = not tracked) this carve leaves, and whether each end
+        // reaches past into the next sample - false only at the joins of a cut split into pieces
+        // because its finish changes along it (the spindle still getting up to speed).
+        public double CarveRa { get; init; } = double.NaN;
+        public bool CarveReachStart { get; init; } = true;
+        public bool CarveReachEnd { get; init; } = true;
 
         public int Line { get; init; }
         public MachineStateSnapshot State { get; init; }

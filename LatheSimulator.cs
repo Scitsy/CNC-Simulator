@@ -51,34 +51,170 @@ namespace FanucSimulator
 
         // How long a move takes on the machine, with no side effects - shared by the cycle-time clock
         // above and the playback timeline, so the two can never disagree about a move's duration.
+        // Starts from the spindle's actual speed now: a per-rev feed follows the spindle as it really
+        // turns, so while it is still ramping up the tool advances more slowly too.
         private double MoveSeconds(double distanceMm, bool rapid)
         {
             if (distanceMm <= 0)
                 return 0;
 
-            double mmPerMin;
             if (rapid)
-            {
-                mmPerMin = RapidTraverseRateMmPerMin;
-            }
-            else if (Modal.Feed == FeedMode.PerRevolution)
-            {
-                // Per-rev feed only means something in mm/min terms once the spindle is actually
-                // turning - with it stopped there's no real feed rate to time against, so skip
-                // rather than divide by zero (or silently invent a rate).
-                if (SpindleSpeed <= 0)
-                    return 0;
-                mmPerMin = FeedRate * SpindleSpeed;
-            }
-            else
-            {
-                mmPerMin = FeedRate;
-            }
+                return distanceMm / RapidTraverseRateMmPerMin * 60;
 
-            if (mmPerMin <= 0)
+            if (FeedRate <= 0)
                 return 0;
 
-            return distanceMm / mmPerMin * 60;
+            if (Modal.Feed == FeedMode.PerRevolution)
+            {
+                // Per-rev feed only moves while the spindle turns. Stopped and staying stopped, the
+                // real axis would sit waiting forever; there is no honest time to give it, so it is
+                // skipped rather than invented (as it always has been here).
+                var seconds = Spindle.SecondsForRevolutions(distanceMm / FeedRate, SpindleTargetRpm);
+                return double.IsInfinity(seconds) ? 0 : seconds;
+            }
+
+            return distanceMm / FeedRate * 60;
+        }
+
+        // ---- Spindle ramp and surface finish ----
+
+        // The spindle's real speed, ramping toward the commanded one - see SpindleModel.
+        public SpindleModel Spindle { get; } = new(MachineSpec.MaxSpindleRpm / MachineSpec.SpindleRampSecondsTypical);
+
+        // Seconds for the spindle to go from stopped to full speed (MachineSpec.MaxSpindleRpm); the
+        // ramp is that rate, up or down. 0 = instant.
+        public double SpindleRampSeconds
+        {
+            get => Spindle.RampRpmPerSecond > 0 ? MachineSpec.MaxSpindleRpm / Spindle.RampRpmPerSecond : 0;
+            set => Spindle.RampRpmPerSecond = value > 0 ? MachineSpec.MaxSpindleRpm / value : 0;
+        }
+
+        // Parameter 3708 bit 0 (SAR): check the spindle speed arrival signal before a cutting move.
+        // On, the control holds each cutting move until the spindle is up to the commanded speed. Off,
+        // it cuts straight away - while the spindle may still be accelerating, at the wrong surface
+        // speed, which leaves a rough start to the cut.
+        public bool SpindleSpeedArrivalCheck { get; set; } = true;
+
+        // Within this fraction of the commanded speed counts as "arrived".
+        private const double SpindleArrivalBand = 0.01;
+
+        // Signed: + forward (M03), - reverse (M04), 0 stopped.
+        private double SpindleTargetRpm => SpindleDir * SpindleSpeed;
+
+        // How much rougher a cut gets when taken below its programmed speed, at the limit of the
+        // spindle barely turning: Ra is multiplied by 1 + this * (shortfall fraction). Low cutting
+        // speed tears rather than shears the metal (built-up edge), which is well established; this
+        // exact factor is an illustrative figure, not a measurement.
+        private const double LowSpeedFinishPenalty = 3.0;
+
+        // Past this, "rough" is all there is to say - and it keeps a stopped spindle from reading as
+        // an infinite number.
+        private const double MaxTrackedRa = 50.0;
+
+        // Ra in micrometres for a turned surface. The geometry: each turn of the part, the tool's
+        // round nose leaves a scallop whose height depends on the feed per rev (f) and nose radius
+        // (r) - the standard estimate is Ra = f^2 / (32 r). Per-rev feed stays at F even while the
+        // spindle ramps (the feed follows the spindle); per-minute feed does not, so a slow spindle
+        // means more feed per rev. On top of that, cutting below the programmed speed is penalised.
+        private double SurfaceRoughness(double actualRpm, double targetRpm, double noseRadius)
+        {
+            var r = Math.Max(noseRadius, 0.05);
+            var speed = Math.Abs(actualRpm);
+            var feedPerRev = Modal.Feed == FeedMode.PerRevolution ? FeedRate
+                : speed > 1e-6 ? FeedRate / speed : double.PositiveInfinity;
+            var ra = feedPerRev * feedPerRev / (32 * r) * 1000;
+            var speedRatio = Math.Abs(targetRpm) > 1e-6 ? Math.Clamp(speed / Math.Abs(targetRpm), 0, 1) : 0;
+            ra *= 1 + LowSpeedFinishPenalty * (1 - speedRatio);
+            return Math.Min(ra, MaxTrackedRa);
+        }
+
+        // How many pieces a cut is split into while the spindle is still ramping, so the finish can
+        // change along it - the rough start of a cut taken before the spindle is up to speed.
+        private const int RampPieces = 8;
+
+        private readonly record struct MovePiece(double FromFraction, double ToFraction, double Seconds, double Ra, double StartRpm);
+
+        // Plans one move against the spindle as it is now: its time, and (for a cut whose finish is
+        // tracked) its pieces with their finish. Pure - the spindle only advances once the move is
+        // done.
+        private (double Seconds, List<MovePiece> Pieces) PlanMove(double travel, bool rapid, bool trackFinish, double noseRadius)
+        {
+            var seconds = MoveSeconds(travel, rapid);
+            var target = SpindleTargetRpm;
+            var pieces = new List<MovePiece>();
+            var rampLeft = Spindle.SecondsToReach(target);
+
+            if (rapid || seconds <= 0 || rampLeft <= 1e-9)
+            {
+                var ra = !rapid && trackFinish ? SurfaceRoughness(Spindle.ActualRpm, target, noseRadius) : double.NaN;
+                pieces.Add(new MovePiece(0, 1, seconds, ra, Spindle.ActualRpm));
+                return (seconds, pieces);
+            }
+
+            var times = new List<double>();
+            var rampEnd = Math.Min(rampLeft, seconds);
+            for (int k = 0; k <= RampPieces; k++)
+                times.Add(rampEnd * k / RampPieces);
+            if (rampEnd < seconds - 1e-12)
+                times.Add(seconds);
+            times[^1] = seconds;
+
+            var perRev = Modal.Feed == FeedMode.PerRevolution;
+            var totalRevs = Spindle.RevolutionsOver(seconds, target);
+            double Fraction(double t) => t >= seconds ? 1
+                : perRev ? (totalRevs > 0 ? Math.Min(1, Spindle.RevolutionsOver(t, target) / totalRevs) : t / seconds)
+                : t / seconds;
+
+            for (int k = 1; k < times.Count; k++)
+            {
+                var (t0, t1) = (times[k - 1], times[k]);
+                var revs = Spindle.RevolutionsOver(t1, target) - Spindle.RevolutionsOver(t0, target);
+                var averageRpm = t1 > t0 ? revs / (t1 - t0) * 60 : Math.Abs(Spindle.RpmAfter(t0, target));
+                var ra = trackFinish ? SurfaceRoughness(averageRpm, target, noseRadius) : double.NaN;
+                pieces.Add(new MovePiece(Fraction(t0), Fraction(t1), t1 - t0, ra, Spindle.RpmAfter(t0, target)));
+            }
+            return (seconds, pieces);
+        }
+
+        // With SAR on, a cutting move first waits for the spindle to reach its commanded speed; the
+        // wait is real machine time and plays back as a pause.
+        private void WaitForSpindleArrival()
+        {
+            if (!SpindleSpeedArrivalCheck)
+                return;
+            var target = SpindleTargetRpm;
+            if (target == 0)
+                return;
+            var gap = Math.Abs(target - Spindle.ActualRpm);
+            if (gap <= Math.Max(1.0, Math.Abs(target) * SpindleArrivalBand))
+                return;
+
+            var wait = Spindle.SecondsToReach(target);
+            if (wait <= 0)
+                return;
+            Messages.Add($"SAR: waiting {wait:F2}s for the spindle to reach {Math.Abs(target):F0} RPM (at {Math.Abs(Spindle.ActualRpm):F0})");
+            SimulatedSecondsElapsed += wait;
+            RecordDwell(wait);
+            Spindle.Advance(wait, target);
+        }
+
+        // The target the "cutting before the spindle is up to speed" note was last given for, so a
+        // ramp is reported once rather than on every piece of every cut.
+        private double? _rampNoticeTarget;
+
+        // Worst finish left on the part, for the end-of-program summary.
+        private void ReportSurfaceFinish()
+        {
+            (double Ra, double Z, bool Bore)? worst = null;
+            for (int i = 0; i <= StockProfile.Resolution; i++)
+            {
+                if (!double.IsNaN(Stock.OuterRa[i]) && (worst == null || Stock.OuterRa[i] > worst.Value.Ra))
+                    worst = (Stock.OuterRa[i], Stock.SampleZ(i), false);
+                if (!double.IsNaN(Stock.InnerRa[i]) && (worst == null || Stock.InnerRa[i] > worst.Value.Ra))
+                    worst = (Stock.InnerRa[i], Stock.SampleZ(i), true);
+            }
+            if (worst is { } w)
+                Messages.Add($"Surface finish: roughest Ra {w.Ra:F2} um, on the {(w.Bore ? "bore" : "OD")} at Z{Len(w.Z)}");
         }
 
         // ---- Playback timeline ----
@@ -93,8 +229,8 @@ namespace FanucSimulator
         // it moves ToolPath's. Dwells never break that chain, so they are not tracked here.
         private TimelineEvent? _lastMotionEvent;
 
-        private MachineStateSnapshot CaptureState() => new(
-            SpindleSpeed, SpindleDir, CoolantOn, CurrentTool, FeedRate,
+        private MachineStateSnapshot CaptureState(double? actualRpm = null) => new(
+            Math.Abs(actualRpm ?? Spindle.ActualRpm), SpindleDir, CoolantOn, CurrentTool, FeedRate,
             Modal.Units == UnitsMode.Inch, Modal.Feed == FeedMode.PerRevolution,
             Modal.Motion, Modal.Comp, Modal.ActiveWorkOffset, Modal.Spindle == SpindleMode.ConstantSurfaceSpeed);
 
@@ -256,6 +392,8 @@ namespace FanucSimulator
             }
 
             var (exit, next) = RunBlockRange(blocks, startIndex, isTopLevel: true);
+            if (exit != BlockRangeExit.Paused)
+                ReportSurfaceFinish();
 
             // Closing marker: captures the log and machine state after the last block ran, which no
             // block-start marker would otherwise see (e.g. an M05/M09 on the final line).
@@ -921,12 +1059,14 @@ namespace FanucSimulator
             {
                 SimulatedSecondsElapsed += ms / 1000.0;
                 RecordDwell(ms / 1000.0);
+                Spindle.Advance(ms / 1000.0, SpindleTargetRpm);
                 Messages.Add($"G04: Dwell {ms:F0} ms");
             }
             else if (block.Params.TryGetValue("X", out var sec))
             {
                 SimulatedSecondsElapsed += sec;
                 RecordDwell(sec);
+                Spindle.Advance(sec, SpindleTargetRpm);
                 Messages.Add($"G04: Dwell {sec:F2} sec");
             }
             else
@@ -1062,18 +1202,26 @@ namespace FanucSimulator
             while (arcSweep < 0) arcSweep += 2 * Math.PI;
             if (arcSweep < 1e-9) arcSweep = 2 * Math.PI;
 
+            WaitForSpindleArrival();
+
             var alarmCountBeforeArc = Alarms.Count;
             var firstChordEvent = _timeline?.Events.Count ?? 0;
+            // The chords run the spindle forward as they go (so each chord's finish reflects the
+            // spindle then); the arc as a whole is then timed from the spindle as it was at its start.
+            var spindleAtArcStart = Spindle.ActualRpm;
             _suppressMoveTimeAccumulation = true;
             TessellateArc(X, Z, targetX, targetZ, centerX, centerZ, clockwise);
             _suppressMoveTimeAccumulation = false;
+            Spindle.ActualRpm = spindleAtArcStart;
             var arcAlarmed = Alarms.Count != alarmCountBeforeArc;
+            var arcSeconds = arcAlarmed ? 0 : MoveSeconds(arcRadius * arcSweep, rapid: false);
             if (!arcAlarmed) // don't charge time for an arc that alarmed out mid-tessellation
                 AddMoveTime(arcRadius * arcSweep, rapid: false);
 
             // The chords were timed by their straight-line length; spread the arc's exact time across
             // them instead, so the timeline and the cycle-time clock agree to the last digit.
-            _timeline?.RescaleSince(firstChordEvent, arcAlarmed ? 0 : MoveSeconds(arcRadius * arcSweep, rapid: false));
+            _timeline?.RescaleSince(firstChordEvent, arcSeconds);
+            Spindle.Advance(arcSeconds, SpindleTargetRpm);
 
             if (Modal.Spindle == SpindleMode.ConstantSurfaceSpeed)
                 RecalculateCssSpeed();
@@ -1191,11 +1339,28 @@ namespace FanucSimulator
 
         private void MoveTo(double targetX, double targetZ, bool rapid)
         {
+            // Arcs do their own wait before their first chord (see ApplyArcMotion).
+            if (!rapid && !_suppressMoveTimeAccumulation)
+                WaitForSpindleArrival();
+
+            var offset = Offsets.GetOrCreateTool(_activeOffsetNumber);
+
+            // Turning and boring are the cuts whose finish is modelled: a round nose dragged along
+            // the part. Drilling, grooving and threading leave surfaces this doesn't estimate.
+            var trackFinish = !rapid && offset.Type is ToolType.OdTurning or ToolType.IdBoring;
+
+            // Said once per ramp, before this move's own log, so playback shows it as the cut starts.
+            var target = SpindleTargetRpm;
+            if (trackFinish && target != 0 && Math.Abs(Spindle.ActualRpm) < Math.Abs(target) * 0.95
+                && _rampNoticeTarget != target)
+            {
+                Messages.Add($"Cutting before the spindle is up to speed: {Math.Abs(Spindle.ActualRpm):F0} of {Math.Abs(target):F0} RPM - rough finish");
+                _rampNoticeTarget = target;
+            }
+
             // Before anything this move itself logs (a collision warning, say), so playback shows
             // that warning when the move is reached rather than one move early.
             var (messagesBefore, warningsBefore, alarmsBefore) = (Messages.Count, Warnings.Count, Alarms.Count);
-
-            var offset = Offsets.GetOrCreateTool(_activeOffsetNumber);
 
             // X is a diameter, but the tool only travels half of any change in it. Lengths, directions
             // and the comp offset below are all worked out in radius terms, the space the tool really
@@ -1208,7 +1373,9 @@ namespace FanucSimulator
             // A feed runs at F along the path. A rapid runs each axis at up to its own rapid rate, so
             // it takes as long as the longer axis needs - true for straight and dogleg rapids alike.
             var travel = rapid ? Math.Max(Math.Abs(drx), Math.Abs(dz)) : len;
-            AddMoveTime(travel, rapid);
+            var plan = PlanMove(travel, rapid, trackFinish, offset.NoseRadius);
+            if (!_suppressMoveTimeAccumulation)
+                SimulatedSecondsElapsed += plan.Seconds;
             var ndx = hasDirection ? drx / len : 0;
             var ndz = hasDirection ? dz / len : 0;
 
@@ -1317,42 +1484,67 @@ namespace FanucSimulator
                         break;
                 }
 
-                if (carve == CarveKind.Outer)
-                    Stock.CarveOuter(carveZ1, carveX1, carveZ2, carveX2);
-                else if (carve == CarveKind.Inner)
-                    Stock.CarveInner(carveZ1, carveX1, carveZ2, carveX2);
             }
 
-            if (_timeline != null)
+            // One piece normally; several while the spindle is still ramping, so the finish can
+            // change along the cut. Each piece carves its own stretch and is its own timeline event;
+            // only the cut's real ends reach past into the next sample (see StockProfile.Carve).
+            static double Lerp(double a, double b, double f) => f >= 1 ? b : a + (b - a) * f;
+            for (int k = 0; k < plan.Pieces.Count; k++)
             {
+                var piece = plan.Pieces[k];
+                var (f0, f1) = (piece.FromFraction, piece.ToFraction);
+                var first = k == 0;
+                var last = k == plan.Pieces.Count - 1;
+                var (pz1, px1) = (Lerp(carveZ1, carveZ2, f0), Lerp(carveX1, carveX2, f0));
+                var (pz2, px2) = (Lerp(carveZ1, carveZ2, f1), Lerp(carveX1, carveX2, f1));
+                if (first)
+                    (pz1, px1) = (carveZ1, carveX1);
+
+                if (carve == CarveKind.Outer)
+                    Stock.CarveOuter(pz1, px1, pz2, px2, piece.Ra, first, last);
+                else if (carve == CarveKind.Inner)
+                    Stock.CarveInner(pz1, px1, pz2, px2, piece.Ra, first, last);
+
+                if (_timeline == null)
+                    continue;
+
                 // Inside an arc, the chords' time is provisional - ApplyArcMotion rescales them so
                 // they share the arc's exact duration, the same number the cycle-time clock gets.
-                var seconds = MoveSeconds(travel, rapid);
                 var ev = new TimelineEvent
                 {
                     Seq = _timeline.NextSeq(),
                     StartTime = _timeline.Duration,
-                    Duration = seconds,
+                    Duration = piece.Seconds,
                     Kind = !rapid ? TimelineEventKind.Feed
                         : ToolPath[^1].Type == "collision" ? TimelineEventKind.Collision
                         : TimelineEventKind.Rapid,
-                    FromRenderX = fromRenderX,
-                    FromRenderZ = fromRenderZ,
-                    ToRenderX = toRenderX,
-                    ToRenderZ = toRenderZ,
-                    FromX = X, FromZ = Z, ToX = targetX, ToZ = targetZ,
+                    FromRenderX = first ? fromRenderX : Lerp(fromRenderX, toRenderX, f0),
+                    FromRenderZ = first ? fromRenderZ : Lerp(fromRenderZ, toRenderZ, f0),
+                    ToRenderX = Lerp(fromRenderX, toRenderX, f1),
+                    ToRenderZ = Lerp(fromRenderZ, toRenderZ, f1),
+                    FromX = first ? X : Lerp(X, targetX, f0),
+                    FromZ = first ? Z : Lerp(Z, targetZ, f0),
+                    ToX = Lerp(X, targetX, f1),
+                    ToZ = Lerp(Z, targetZ, f1),
                     Carve = carve,
-                    CarveZ1 = carveZ1, CarveX1 = carveX1, CarveZ2 = carveZ2, CarveX2 = carveX2,
+                    CarveZ1 = pz1, CarveX1 = px1, CarveZ2 = pz2, CarveX2 = px2,
+                    CarveRa = piece.Ra,
+                    CarveReachStart = first,
+                    CarveReachEnd = last,
                     Line = _currentLine,
-                    State = CaptureState(),
-                    MessagesBefore = messagesBefore,
-                    WarningsBefore = warningsBefore,
-                    AlarmsBefore = alarmsBefore,
+                    State = CaptureState(piece.StartRpm),
+                    MessagesBefore = first ? messagesBefore : Messages.Count,
+                    WarningsBefore = first ? warningsBefore : Warnings.Count,
+                    AlarmsBefore = first ? alarmsBefore : Alarms.Count,
                 };
                 _timeline.Events.Add(ev);
-                _timeline.Duration += seconds;
+                _timeline.Duration += piece.Seconds;
                 _lastMotionEvent = ev;
             }
+
+            // The spindle keeps turning (and ramping) through every move, rapids included.
+            Spindle.Advance(plan.Seconds, target);
 
             _lastActualRenderPos = (toRenderX, toRenderZ);
 

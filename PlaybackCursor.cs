@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -252,10 +252,12 @@ namespace FanucSimulator
             fraction = Math.Clamp(fraction, 0, 1);
             var z2 = Lerp(ev.CarveZ1, ev.CarveZ2, fraction);
             var x2 = Lerp(ev.CarveX1, ev.CarveX2, fraction);
+            // Part-way through, the moving end is where the tool is, not a real end of the cut.
+            var reachEnd = fraction >= 1 && ev.CarveReachEnd;
             if (ev.Carve == CarveKind.Outer)
-                Stock.CarveOuter(ev.CarveZ1, ev.CarveX1, z2, x2);
+                Stock.CarveOuter(ev.CarveZ1, ev.CarveX1, z2, x2, ev.CarveRa, ev.CarveReachStart, reachEnd);
             else
-                Stock.CarveInner(ev.CarveZ1, ev.CarveX1, z2, x2);
+                Stock.CarveInner(ev.CarveZ1, ev.CarveX1, z2, x2, ev.CarveRa, ev.CarveReachStart, reachEnd);
         }
 
         // Exact at f == 1 (returns b itself), so a fully carved segment matches the engine's own carve

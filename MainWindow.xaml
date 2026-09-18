@@ -214,6 +214,25 @@
                             <TextBlock x:Name="PlaybackStatusText" Text="" Foreground="#e8c000" FontSize="11" VerticalAlignment="Center" Margin="8,0,0,0"/>
                         </StackPanel>
                     </Border>
+
+                    <!-- Surface finish: colours the cut surface by its roughness (Ra). The bands are the
+                         standard Ra grades N7 / N8 / N9 and rougher. -->
+                    <Border HorizontalAlignment="Left" VerticalAlignment="Top" Margin="8,38,0,0" Padding="6,3"
+                            Background="#161616" BorderBrush="#333" BorderThickness="1">
+                        <StackPanel Orientation="Horizontal">
+                            <CheckBox x:Name="ShowFinishToggle" Content="Finish" IsChecked="True" Foreground="{StaticResource MutedText}" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"
+                                      Checked="ShowFinish_Changed" Unchecked="ShowFinish_Changed"
+                                      ToolTip="Colour the cut surface by its roughness, Ra in micrometres. Turned and bored surfaces only."/>
+                            <Rectangle Width="10" Height="10" Fill="#3fd06a" VerticalAlignment="Center" Margin="0,0,3,0"/>
+                            <TextBlock Text="&#x2264;1.6" Foreground="{StaticResource MutedText}" FontSize="10" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <Rectangle Width="10" Height="10" Fill="#c8e04a" VerticalAlignment="Center" Margin="0,0,3,0"/>
+                            <TextBlock Text="&#x2264;3.2" Foreground="{StaticResource MutedText}" FontSize="10" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <Rectangle Width="10" Height="10" Fill="#f0a030" VerticalAlignment="Center" Margin="0,0,3,0"/>
+                            <TextBlock Text="&#x2264;6.3" Foreground="{StaticResource MutedText}" FontSize="10" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <Rectangle Width="10" Height="10" Fill="#e84040" VerticalAlignment="Center" Margin="0,0,3,0"/>
+                            <TextBlock Text="&gt;6.3 Ra &#x00B5;m" Foreground="{StaticResource MutedText}" FontSize="10" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
                 </Grid>
             </Border>
 
@@ -715,6 +734,42 @@
                             </ScrollViewer>
                         </Grid>
 
+                        <!-- SYSTEM screen: the few parameters this simulator honours -->
+                        <Grid x:Name="SystemScreen" Visibility="Collapsed">
+                            <StackPanel>
+                                <TextBlock Text="PARAMETER" Style="{StaticResource ScreenFieldLabel}" Margin="0,0,0,6"/>
+
+                                <Grid Margin="0,0,0,2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="60"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="03708" Foreground="{StaticResource ScreenAxisLabel}" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    <TextBlock Grid.Column="1" Text="#0 SAR  check spindle speed arrival before cutting" Foreground="{StaticResource ScreenValue}" VerticalAlignment="Center"/>
+                                    <Button Grid.Column="2" x:Name="SarParameterButton" Content="1" Width="40" Click="SarParameter_Click" Style="{StaticResource PanelButton}"
+                                            ToolTip="1: each cutting move waits until the spindle is up to speed. 0: cutting starts at once, even while the spindle is still accelerating."/>
+                                </Grid>
+                                <TextBlock x:Name="SarParameterNote" TextWrapping="Wrap" Foreground="{StaticResource ScreenMuted}" FontSize="11" Margin="60,0,0,10"/>
+
+                                <Grid Margin="0,0,0,2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="60"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="SPDL" Foreground="{StaticResource ScreenAxisLabel}" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    <TextBlock Grid.Column="1" Text="spindle ramp, 0 to 4500 RPM (seconds)" Foreground="{StaticResource ScreenValue}" VerticalAlignment="Center"/>
+                                    <TextBox Grid.Column="2" x:Name="SpindleRampInput" Width="60" Background="{StaticResource ScreenBg}" Foreground="{StaticResource ScreenValue}"
+                                             KeyDown="SpindleRampInput_KeyDown" LostFocus="SpindleRampInput_LostFocus"/>
+                                    <TextBlock Grid.Column="3" Text=" s" Foreground="{StaticResource ScreenValue}" VerticalAlignment="Center"/>
+                                </Grid>
+                                <TextBlock TextWrapping="Wrap" Foreground="{StaticResource ScreenMuted}" FontSize="11" Margin="60,0,0,10"
+                                           Text="The spindle drive's acceleration, not a control parameter. 3.0 s is a typical figure, not yet timed on this machine; 0 makes the spindle instant."/>
+                            </StackPanel>
+                        </Grid>
+
                         <!-- HELP screen -->
                         <Grid x:Name="HelpScreen" Visibility="Collapsed">
                             <ScrollViewer x:Name="HelpScrollViewer" VerticalScrollBarVisibility="Auto">
@@ -821,7 +876,7 @@
                 <Button x:Name="ShiftKeyButton" Content="SHIFT" Click="ShiftKey_Click" Style="{StaticResource FunctionKey}"/>
                 <Button Content="CAN" Click="CanKey_Click" Style="{StaticResource FunctionKey}"/>
                 <Button Content="INPUT" Click="InputKey_Click" Style="{StaticResource FunctionKey}"/>
-                <Button Content="SYSTEM" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
+                <Button Content="SYSTEM" Tag="SYSTEM" Click="ScreenButton_Click" Style="{StaticResource FunctionKey}"/>
                 <Button Content="MESSAGE" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
                 <Button Content="CSTM/GR" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
                 <Button Content="ALTER" Style="{StaticResource FunctionKey}" IsEnabled="False"/>
