@@ -1820,5 +1820,76 @@ Console.WriteLine();
         CheckTimelinesThroughout(replay, new GCodeParser().Parse(Cut), "SAR off cut") == 1);
 }
 
+// ---- [89] FEED and RAPID override dials ----
+{
+    Console.WriteLine("[89] Override dials: FEED scales cutting feed (not threading) and finish; RAPID scales rapids");
+    const double RapidMmPerMin = 500 * 25.4;
+
+    // G98 F300 over 41mm (Z1 -> Z-40), spindle already at speed (no ramp), stock 50: at 100% vs 50%.
+    LatheSimulator Cut(double feedOverride)
+    {
+        var s = new LatheSimulator { StockDiameter = 50, StockLength = 60, SpindleRampSeconds = 0, FeedOverride = feedOverride };
+        s.ResetStockProfile();
+        s.RunProgram(new GCodeParser().Parse("G21\nG98\nT0101\nM03 S1500\nG01 X40 Z1 F300\nG01 Z-40\nM30\n"));
+        return s;
+    }
+    var full = Cut(1.0);
+    var half = Cut(0.5);
+    var cutFull = full.LastTimeline!.Events.Single(e => e.Line == 6);
+    var cutHalf = half.LastTimeline!.Events.Single(e => e.Line == 6);
+    Check("FEED 50%: the cut takes twice as long", Math.Abs(cutHalf.Duration - 2 * cutFull.Duration) < 1e-9);
+    Check("FEED 50%: finish is a quarter (Ra goes with feed per rev squared)",
+        Math.Abs(cutHalf.CarveRa - cutFull.CarveRa / 4) < 1e-9);
+    Check("the timeline records the override it was run at", half.LastTimeline!.RecordedFeedOverride == 0.5);
+    Check("cutting moves are marked as scaled by the FEED dial", cutHalf.FeedOverrideApplies);
+    Check("rapids are not", !half.LastTimeline!.Events.Where(e => e.Kind == TimelineEventKind.Rapid).Any(e => e.FeedOverrideApplies));
+
+    // Threading ignores the FEED override: the lead is locked to the spindle.
+    double ThreadSeconds(double feedOverride)
+    {
+        var s = new LatheSimulator { SpindleRampSeconds = 0, FeedOverride = feedOverride };
+        s.Offsets.GetOrCreateTool(3).Type = ToolType.Threading;
+        s.RunProgram(new GCodeParser().Parse("G21\nG99\nT0303\nM03 S600\nG00 X20 Z2\nG32 Z-20 F1.5\nM30\n"));
+        return s.LastTimeline!.Events.Single(e => e.Line == 6).Duration;
+    }
+    Check("G32 threading takes the same time at FEED 50% as at 100%", Math.Abs(ThreadSeconds(0.5) - ThreadSeconds(1.0)) < 1e-12);
+
+    // RAPID: 25% is four times as long; F0 runs at parameter 1421's speed.
+    double RapidSeconds(int percent, double f0 = 1000)
+    {
+        var s = new LatheSimulator { RapidOverridePercent = percent, RapidF0MmPerMin = f0 };
+        s.RunProgram(new GCodeParser().Parse("G21\nT0101\nG00 Z-30\nM30\n"));
+        return s.SimulatedSecondsElapsed;
+    }
+    Check("RAPID 100%: 30mm at 500 in/min", Math.Abs(RapidSeconds(100) - 30 / RapidMmPerMin * 60) < 1e-9);
+    Check("RAPID 25%: four times as long", Math.Abs(RapidSeconds(25) - 4 * RapidSeconds(100)) < 1e-9);
+    Check("RAPID F0: at the parameter 1421 rate (1000 mm/min here)", Math.Abs(RapidSeconds(0, 1000) - 30.0 / 1000 * 60) < 1e-9);
+
+    // Live dials during playback: the cursor plays each event at its own rate.
+    var tl = full.LastTimeline!;
+    var cursor = new PlaybackCursor(tl);
+    double Doubled(TimelineEvent e) => e.Kind == TimelineEventKind.Feed ? 2.0 : 1.0;
+    Check("at twice the rate, the feed moves take half the machine time",
+        Math.Abs(cursor.MachineSecondsBetween(cutFull.StartTime, cutFull.EndTime, Doubled) - cutFull.Duration / 2) < 1e-9);
+    cursor.Seek(cutFull.StartTime);
+    var (after, stalled) = cursor.TimeAfter(cutFull.Duration / 4, Doubled);
+    Check("TimeAfter: a quarter of the cut's time at double rate gets halfway through it",
+        !stalled && Math.Abs(after - (cutFull.StartTime + cutFull.Duration / 2)) < 1e-9);
+    var (stuck, isStalled) = cursor.TimeAfter(5.0, e => e.Kind == TimelineEventKind.Feed ? 0 : 1);
+    Check("TimeAfter: FEED at 0% stops the playhead in a cut, machine time still passing",
+        isStalled && Math.Abs(stuck - cutFull.StartTime) < 1e-9);
+
+    // Turning the dial mid-cut changes the finish of the rest of the cut only.
+    cursor.FinishScale = 1.0;
+    cursor.Seek(cutFull.StartTime + cutFull.Duration / 2);
+    cursor.FinishScale = 0.25;
+    cursor.Seek(tl.Duration);
+    double RaAt(StockProfile st, double z) => st.OuterRa[NearestIndex(st, z)];
+    Check("dial turned mid-cut: the first half keeps its finish", Math.Abs(RaAt(cursor.Stock, -5) - cutFull.CarveRa) < 1e-9);
+    Check("dial turned mid-cut: the second half takes the new one", Math.Abs(RaAt(cursor.Stock, -35) - cutFull.CarveRa * 0.25) < 1e-9);
+    Check("dial turned mid-cut: the shape is still exactly the engine's",
+        Enumerable.Range(0, StockProfile.Resolution + 1).All(i => Math.Abs(cursor.Stock.OuterX[i] - full.Stock.OuterX[i]) < 1e-9));
+}
+
 Console.WriteLine($"===== TOTAL: {pass} passed, {fail} failed =====");
 Environment.Exit(fail == 0 ? 0 : 1);

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Text.Json;
 using System.Windows;
@@ -17,6 +17,7 @@ namespace FanucSimulator
         {
             public bool SpindleSpeedArrivalCheck { get; set; } = true;
             public double SpindleRampSeconds { get; set; } = MachineSpec.SpindleRampSecondsTypical;
+            public double RapidF0MmPerMin { get; set; } = MachineSpec.RapidF0PlaceholderMmPerMin;
         }
 
         private static readonly string ParametersPath = IOPath.Combine(
@@ -66,6 +67,36 @@ namespace FanucSimulator
                 ? "1: each cutting move waits until the spindle is up to the commanded speed."
                 : "0: cutting starts at once, even while the spindle is still speeding up - the start of those cuts is rougher.";
             SpindleRampInput.Text = _parameters.SpindleRampSeconds.ToString("0.0#");
+            RapidF0Input.Text = _parameters.RapidF0MmPerMin.ToString("0");
+        }
+
+        private void RapidF0Input_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter)
+                CommitRapidF0();
+        }
+
+        private void RapidF0Input_LostFocus(object sender, RoutedEventArgs e) => CommitRapidF0();
+
+        private void CommitRapidF0()
+        {
+            if (!double.TryParse(RapidF0Input.Text, out var rate) || rate <= 0 || rate > MachineSpec.RapidTraverseMmPerMin)
+            {
+                RefreshSystemScreen();
+                return;
+            }
+            if (Math.Abs(rate - _parameters.RapidF0MmPerMin) < 1e-9)
+                return;
+            if (RefuseInCycle("Changing parameters"))
+            {
+                RefreshSystemScreen();
+                return;
+            }
+            _parameters.RapidF0MmPerMin = rate;
+            ApplyMachineParameters();
+            SaveMachineParameters();
+            RefreshSystemScreen();
+            Log($"Parameter 1421 F0 rate = {rate:0} mm/min", "info");
         }
 
         // A parameter changed mid-cycle would leave what is showing out of step with the run the

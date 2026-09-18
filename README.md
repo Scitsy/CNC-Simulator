@@ -54,6 +54,11 @@ runs real conditionals and loops, not just token substitution.
   halts just before a rapid that would hit the part and shows the move it was about to make. Under
   the hood the engine still runs each program instantly and records a timeline of what it did; the
   replay is checked in the test suite to reproduce the engine's part exactly.
+- **Live FEED and RAPID override dials**: FEED 0-150 % and RAPID F0/25/50/100 %, laid out like the
+  real panel (drag or scroll to turn). They work mid-cut, as on the machine: turn FEED down and the
+  tool slows (at 0 % it stops, the cycle still running), turn it up and the rest of the cut goes
+  faster and rougher - roughness goes with feed per rev squared. Threading ignores the FEED
+  override, as FANUC does. F0 is parameter 1421, set on the SYSTEM screen.
 - **Spindle ramp and surface finish**: the spindle accelerates to each commanded speed rather than
   jumping there (3 s to 4500 RPM by default, adjustable on the SYSTEM screen). With parameter 3708#0
   (SAR) set, the control waits for the spindle before each cut; with it clear, cutting starts at once
@@ -124,7 +129,7 @@ A few worth starting with:
 ## Testing
 
 `EngineTest/` is a headless console harness (source-linked against the same engine files, no test
-framework dependency) with 355 hand-rolled assertions covering every documented G/M-code, both
+framework dependency) with 370 hand-rolled assertions covering every documented G/M-code, both
 canned-cycle directions, macro control flow, geometry checks against several of the demo programs
 above, the catalog-persistence round-trip, and exact closed-form cycle-time checks. Runs
 automatically on every push via GitHub Actions (see the badge at the top of this file).

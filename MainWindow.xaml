@@ -767,6 +767,22 @@
                                 </Grid>
                                 <TextBlock TextWrapping="Wrap" Foreground="{StaticResource ScreenMuted}" FontSize="11" Margin="60,0,0,10"
                                            Text="The spindle drive's acceleration, not a control parameter. 3.0 s is a typical figure, not yet timed on this machine; 0 makes the spindle instant."/>
+
+                                <Grid Margin="0,0,0,2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="60"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="01421" Foreground="{StaticResource ScreenAxisLabel}" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    <TextBlock Grid.Column="1" Text="F0 rate of rapid traverse override" Foreground="{StaticResource ScreenValue}" VerticalAlignment="Center"/>
+                                    <TextBox Grid.Column="2" x:Name="RapidF0Input" Width="60" Background="{StaticResource ScreenBg}" Foreground="{StaticResource ScreenValue}"
+                                             KeyDown="RapidF0Input_KeyDown" LostFocus="RapidF0Input_LostFocus"/>
+                                    <TextBlock Grid.Column="3" Text=" mm/min" Foreground="{StaticResource ScreenValue}" VerticalAlignment="Center"/>
+                                </Grid>
+                                <TextBlock TextWrapping="Wrap" Foreground="{StaticResource ScreenMuted}" FontSize="11" Margin="60,0,0,10"
+                                           Text="The rapid speed with the RAPID dial at F0. PLACEHOLDER (10% of rapid) - read the real value from the control: SYSTEM, PARAM, 1421."/>
                             </StackPanel>
                         </Grid>
 
@@ -939,17 +955,19 @@
                     </Grid>
                     <TextBlock Text="EMERGENCY STOP" Foreground="{StaticResource MutedText}" FontSize="8" HorizontalAlignment="Center" Margin="0,3,0,10" TextWrapping="Wrap" TextAlignment="Center" Width="76"/>
 
-                    <TextBlock Text="FEED / %" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center"/>
-                    <Grid Width="58" Height="58" Margin="0,2,0,10">
-                        <Ellipse Fill="#1a1a1a" Stroke="#777" StrokeThickness="1.5"/>
-                        <Line X1="29" Y1="29" X2="45" Y2="14" Stroke="White" StrokeThickness="2"/>
-                    </Grid>
+                    <!-- Override dials: drag or scroll to turn. Live during a run, as on the machine -
+                         see MainWindow.Overrides.cs. -->
+                    <TextBlock x:Name="FeedDialLabel" Text="FEED / %" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center"/>
+                    <Canvas x:Name="FeedDialCanvas" Width="96" Height="72" Margin="0,2,0,4" Background="Transparent" Cursor="Hand"
+                            AutomationProperties.AutomationId="FeedDial"
+                            MouseLeftButtonDown="FeedDial_Mouse" MouseMove="FeedDial_Mouse" MouseLeftButtonUp="Dial_MouseUp" MouseWheel="FeedDial_Wheel"
+                            ToolTip="FEED override, 0-150%. Drag or scroll. Scales cutting feed (not threading) - live, even mid-cut."/>
 
-                    <TextBlock Text="RAPID / INC" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center"/>
-                    <Grid Width="58" Height="58" Margin="0,2,0,12">
-                        <Ellipse Fill="#1a1a1a" Stroke="#777" StrokeThickness="1.5"/>
-                        <Line X1="29" Y1="29" X2="12" Y2="14" Stroke="White" StrokeThickness="2"/>
-                    </Grid>
+                    <TextBlock x:Name="RapidDialLabel" Text="RAPID / INC" Foreground="{StaticResource MutedText}" FontSize="9" HorizontalAlignment="Center"/>
+                    <Canvas x:Name="RapidDialCanvas" Width="96" Height="60" Margin="0,2,0,8" Background="Transparent" Cursor="Hand"
+                            AutomationProperties.AutomationId="RapidDial"
+                            MouseLeftButtonDown="RapidDial_Mouse" MouseMove="RapidDial_Mouse" MouseLeftButtonUp="Dial_MouseUp" MouseWheel="RapidDial_Wheel"
+                            ToolTip="RAPID override: F0 (parameter 1421), 25, 50, 100%. Drag or scroll."/>
 
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                         <Button Content="&#9679;" Click="Execute_Click" Background="#004400" Foreground="#29d629"

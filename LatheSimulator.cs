@@ -35,6 +35,27 @@ namespace FanucSimulator
         // This machine's real rapid (500 in/min) - see MachineSpec for where it came from.
         private const double RapidTraverseRateMmPerMin = MachineSpec.RapidTraverseMmPerMin;
 
+        // ---- Override dials ----
+
+        // FEED override, as a fraction (1.0 = 100%, up to 1.5). Scales every cutting feed except
+        // threading. Must be above zero here: at 0% a real machine simply stops feeding, which only
+        // playback can show (it holds the tool); a run is recorded at 100% in that case.
+        private double _feedOverride = 1.0;
+        public double FeedOverride
+        {
+            get => _feedOverride;
+            set => _feedOverride = Math.Clamp(value, 0.01, MachineSpec.MaxFeedOverride);
+        }
+
+        // RAPID override: 100, 50 or 25 (%), or 0 for the F0 position, which runs at a fixed speed
+        // set by parameter 1421 rather than a percentage.
+        public int RapidOverridePercent { get; set; } = 100;
+        public double RapidF0MmPerMin { get; set; } = MachineSpec.RapidF0PlaceholderMmPerMin;
+
+        public double RapidRateMmPerMin => RapidOverridePercent <= 0
+            ? RapidF0MmPerMin
+            : RapidTraverseRateMmPerMin * RapidOverridePercent / 100.0;
+
         // Set around arc tessellation: TessellateArc drives each ~3-degree chord through MoveTo (for
         // offset/comp/collision-checking reuse), but chord-summed distance is only an approximation
         // of true arc length - ApplyArcMotion instead adds one exact radius*sweep-based time for the
@@ -53,15 +74,16 @@ namespace FanucSimulator
         // above and the playback timeline, so the two can never disagree about a move's duration.
         // Starts from the spindle's actual speed now: a per-rev feed follows the spindle as it really
         // turns, so while it is still ramping up the tool advances more slowly too.
-        private double MoveSeconds(double distanceMm, bool rapid)
+        private double MoveSeconds(double distanceMm, bool rapid, bool feedOverrideApplies = true)
         {
             if (distanceMm <= 0)
                 return 0;
 
             if (rapid)
-                return distanceMm / RapidTraverseRateMmPerMin * 60;
+                return RapidRateMmPerMin > 0 ? distanceMm / RapidRateMmPerMin * 60 : 0;
 
-            if (FeedRate <= 0)
+            var feed = EffectiveFeed(feedOverrideApplies);
+            if (feed <= 0)
                 return 0;
 
             if (Modal.Feed == FeedMode.PerRevolution)
@@ -69,12 +91,16 @@ namespace FanucSimulator
                 // Per-rev feed only moves while the spindle turns. Stopped and staying stopped, the
                 // real axis would sit waiting forever; there is no honest time to give it, so it is
                 // skipped rather than invented (as it always has been here).
-                var seconds = Spindle.SecondsForRevolutions(distanceMm / FeedRate, SpindleTargetRpm);
+                var seconds = Spindle.SecondsForRevolutions(distanceMm / feed, SpindleTargetRpm);
                 return double.IsInfinity(seconds) ? 0 : seconds;
             }
 
-            return distanceMm / FeedRate * 60;
+            return distanceMm / feed * 60;
         }
+
+        // The feed actually cut at: F scaled by the FEED override dial, except where the override
+        // doesn't apply (threading, whose lead must stay locked to the spindle).
+        private double EffectiveFeed(bool feedOverrideApplies) => FeedRate * (feedOverrideApplies ? FeedOverride : 1.0);
 
         // ---- Spindle ramp and surface finish ----
 
@@ -120,8 +146,10 @@ namespace FanucSimulator
         {
             var r = Math.Max(noseRadius, 0.05);
             var speed = Math.Abs(actualRpm);
-            var feedPerRev = Modal.Feed == FeedMode.PerRevolution ? FeedRate
-                : speed > 1e-6 ? FeedRate / speed : double.PositiveInfinity;
+            // Only turning and boring are tracked, and the FEED override always applies to them.
+            var feed = EffectiveFeed(feedOverrideApplies: true);
+            var feedPerRev = Modal.Feed == FeedMode.PerRevolution ? feed
+                : speed > 1e-6 ? feed / speed : double.PositiveInfinity;
             var ra = feedPerRev * feedPerRev / (32 * r) * 1000;
             var speedRatio = Math.Abs(targetRpm) > 1e-6 ? Math.Clamp(speed / Math.Abs(targetRpm), 0, 1) : 0;
             ra *= 1 + LowSpeedFinishPenalty * (1 - speedRatio);
@@ -137,9 +165,9 @@ namespace FanucSimulator
         // Plans one move against the spindle as it is now: its time, and (for a cut whose finish is
         // tracked) its pieces with their finish. Pure - the spindle only advances once the move is
         // done.
-        private (double Seconds, List<MovePiece> Pieces) PlanMove(double travel, bool rapid, bool trackFinish, double noseRadius)
+        private (double Seconds, List<MovePiece> Pieces) PlanMove(double travel, bool rapid, bool trackFinish, double noseRadius, bool feedOverrideApplies)
         {
-            var seconds = MoveSeconds(travel, rapid);
+            var seconds = MoveSeconds(travel, rapid, feedOverrideApplies);
             var target = SpindleTargetRpm;
             var pieces = new List<MovePiece>();
             var rampLeft = Spindle.SecondsToReach(target);
@@ -202,8 +230,8 @@ namespace FanucSimulator
         // ramp is reported once rather than on every piece of every cut.
         private double? _rampNoticeTarget;
 
-        // Worst finish left on the part, for the end-of-program summary.
-        private void ReportSurfaceFinish()
+        // Worst finish left on the part (Z in mm), or null if nothing with a tracked finish was cut.
+        public (double Ra, double Z, bool Bore)? RoughestFinish()
         {
             (double Ra, double Z, bool Bore)? worst = null;
             for (int i = 0; i <= StockProfile.Resolution; i++)
@@ -213,7 +241,13 @@ namespace FanucSimulator
                 if (!double.IsNaN(Stock.InnerRa[i]) && (worst == null || Stock.InnerRa[i] > worst.Value.Ra))
                     worst = (Stock.InnerRa[i], Stock.SampleZ(i), true);
             }
-            if (worst is { } w)
+            return worst;
+        }
+
+        // The end-of-program summary.
+        private void ReportSurfaceFinish()
+        {
+            if (RoughestFinish() is { } w)
                 Messages.Add($"Surface finish: roughest Ra {w.Ra:F2} um, on the {(w.Bore ? "bore" : "OD")} at Z{Len(w.Z)}");
         }
 
@@ -377,7 +411,11 @@ namespace FanucSimulator
             Warnings.Clear();
             SimulatedSecondsElapsed = 0;
 
-            _timeline = new MotionTimeline(Stock.Clone(), ToolPath.Count);
+            _timeline = new MotionTimeline(Stock.Clone(), ToolPath.Count)
+            {
+                RecordedFeedOverride = FeedOverride,
+                RecordedRapidMmPerMin = RapidRateMmPerMin,
+            };
             LastTimeline = _timeline;
             _lastMotionEvent = null;
 
@@ -1349,6 +1387,9 @@ namespace FanucSimulator
             // the part. Drilling, grooving and threading leave surfaces this doesn't estimate.
             var trackFinish = !rapid && offset.Type is ToolType.OdTurning or ToolType.IdBoring;
 
+            // Every threading cycle requires a threading tool, so the tool tells a thread cut apart.
+            var feedOverrideApplies = !rapid && offset.Type != ToolType.Threading;
+
             // Said once per ramp, before this move's own log, so playback shows it as the cut starts.
             var target = SpindleTargetRpm;
             if (trackFinish && target != 0 && Math.Abs(Spindle.ActualRpm) < Math.Abs(target) * 0.95
@@ -1373,7 +1414,7 @@ namespace FanucSimulator
             // A feed runs at F along the path. A rapid runs each axis at up to its own rapid rate, so
             // it takes as long as the longer axis needs - true for straight and dogleg rapids alike.
             var travel = rapid ? Math.Max(Math.Abs(drx), Math.Abs(dz)) : len;
-            var plan = PlanMove(travel, rapid, trackFinish, offset.NoseRadius);
+            var plan = PlanMove(travel, rapid, trackFinish, offset.NoseRadius, feedOverrideApplies);
             if (!_suppressMoveTimeAccumulation)
                 SimulatedSecondsElapsed += plan.Seconds;
             var ndx = hasDirection ? drx / len : 0;
@@ -1532,6 +1573,7 @@ namespace FanucSimulator
                     CarveRa = piece.Ra,
                     CarveReachStart = first,
                     CarveReachEnd = last,
+                    FeedOverrideApplies = feedOverrideApplies,
                     Line = _currentLine,
                     State = CaptureState(piece.StartRpm),
                     MessagesBefore = first ? messagesBefore : Messages.Count,

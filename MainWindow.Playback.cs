@@ -38,8 +38,19 @@ namespace FanucSimulator
         // True from the moment a run starts playing until it finishes or is reset - "in cycle".
         private bool IsInCycle => _playState != PlaybackState.Idle;
 
-        // How far into the current chunk playback has got, for RUN TIME / CYCLE TIME to tick live.
-        private double PlaybackElapsed => _cursor?.Time ?? 0;
+        // Machine time played so far in the current chunk, for RUN TIME / CYCLE TIME to tick live.
+        // Not the playhead's timeline time: with the override dials moved since CYCLE START, the two
+        // differ - and at FEED 0% the clock runs while the playhead stands still.
+        private double _machineElapsed;
+        private double PlaybackElapsed => _cursor != null ? _machineElapsed : 0;
+
+        // The chunk's machine time, handed to the finish callback: the recorded time when it was not
+        // played, the time actually played otherwise.
+        private double _presentedSeconds;
+
+        // Whether the FEED dial differed from the recorded override while anything was being cut, so
+        // the finish shown differs from the engine's and has to be handed back to it at the end.
+        private bool _finishScaled;
 
         private LatheView CurrentLatheView()
         {
@@ -122,10 +133,14 @@ namespace FanucSimulator
             var timeline = _sim.LastTimeline;
             if (AnimateToggle.IsChecked != true || timeline == null || timeline.Duration <= 0)
             {
+                _presentedSeconds = _sim.SimulatedSecondsElapsed;
                 RevealLog(all: true);
                 onFinished();
                 return;
             }
+
+            _machineElapsed = 0;
+            _finishScaled = false;
 
             _cursor = new PlaybackCursor(timeline);
             _onPlaybackFinished = onFinished;
@@ -151,7 +166,8 @@ namespace FanucSimulator
                 return;
 
             var from = _cursor.Time;
-            var to = Math.Min(from + dt * _playSpeed, _cursor.Timeline.Duration);
+            var budget = dt * _playSpeed;
+            var (to, stalled) = _cursor.TimeAfter(budget, PlaybackRate);
 
             TimelineEvent? crash = null;
             if (StopOnCollisionToggle.IsChecked == true && _cursor.FirstCollisionBetween(from, to) is double crashTime)
@@ -160,7 +176,13 @@ namespace FanucSimulator
                 crash = _cursor.Timeline.Events.First(ev => ev.StartTime == crashTime && ev.Kind == TimelineEventKind.Collision);
             }
 
+            // What is cut from here on takes the finish of the FEED dial as it is now.
+            _cursor.FinishScale = PlaybackFinishScale;
+            if (_cursor.FinishScale != 1.0 && to > from)
+                _finishScaled = true;
             _cursor.Seek(to);
+            _machineElapsed += stalled && crash == null ? budget : _cursor.MachineSecondsBetween(from, to, PlaybackRate);
+            PlaybackStatusText.Text = stalled && crash == null ? "FEED 0% - axes stopped" : "";
 
             if (crash != null)
             {
@@ -233,6 +255,18 @@ namespace FanucSimulator
         {
             CompositionTarget.Rendering -= OnPlaybackFrame;
             RevealLog(all: true);
+            _presentedSeconds = _machineElapsed;
+
+            // The dial was moved mid-run: the part now has the finish that was shown, not the one the
+            // engine recorded at the CYCLE START setting. The shape is the same either way.
+            if (_cursor != null && _finishScaled)
+            {
+                Array.Copy(_cursor.Stock.OuterRa, _sim.Stock.OuterRa, _sim.Stock.OuterRa.Length);
+                Array.Copy(_cursor.Stock.InnerRa, _sim.Stock.InnerRa, _sim.Stock.InnerRa.Length);
+                if (_sim.RoughestFinish() is { } worst)
+                    Log($"Surface finish with the FEED override as run: roughest Ra {worst.Ra:F2} um, on the {(worst.Bore ? "bore" : "OD")} at Z{_sim.FromMm(worst.Z):F3}", "info");
+            }
+
             _cursor = null;
             _heldAtCollision = null;
             _playState = PlaybackState.Idle;
@@ -316,6 +350,11 @@ namespace FanucSimulator
         {
             if (_cursor == null)
                 return;
+            // The rest of the run goes by at the dials as they are now.
+            _machineElapsed += _cursor.MachineSecondsBetween(_cursor.Time, _cursor.Timeline.Duration, PlaybackRate);
+            _cursor.FinishScale = PlaybackFinishScale;
+            if (_cursor.FinishScale != 1.0)
+                _finishScaled = true;
             _cursor.Seek(_cursor.Timeline.Duration);
             FinishPlayback();
         }

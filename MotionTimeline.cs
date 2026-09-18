@@ -56,6 +56,10 @@ namespace FanucSimulator
         public int Line { get; init; }
         public MachineStateSnapshot State { get; init; }
 
+        // Whether the FEED override dial scales this move: cutting feeds do; rapids have their own
+        // dial; threading ignores the feed override (the lead is tied to the spindle), as on FANUC.
+        public bool FeedOverrideApplies { get; init; }
+
         // How much of the log existed just before this move began. Canned cycles log pass by pass
         // inside one block, so revealing the log by block alone ran a whole G71 ahead of the tool;
         // tying it to moves keeps it at most one move ahead.
@@ -98,6 +102,11 @@ namespace FanucSimulator
         public int ToolPathStartCount { get; }
 
         public double Duration { get; internal set; }
+
+        // The override dials as they stood when the run was recorded. Playback compares the dials'
+        // live positions against these to speed up or slow down what is still to come.
+        public double RecordedFeedOverride { get; init; } = 1.0;
+        public double RecordedRapidMmPerMin { get; init; } = MachineSpec.RapidTraverseMmPerMin;
 
         private int _nextSeq;
 

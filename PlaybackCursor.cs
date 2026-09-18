@@ -27,6 +27,20 @@ namespace FanucSimulator
         // in progress.
         private int _applied;
 
+        // How far into Events[_partialIndex] has been carved (it is the event in progress). Carving
+        // continues from there rather than redoing the whole segment each frame, so a change to
+        // FinishScale mid-cut only affects the part cut after it - like turning the dial mid-pass.
+        private int _partialIndex = -1;
+        private double _partialFraction;
+
+        // Multiplies the recorded finish (Ra) of whatever is carved from now on, for moves the FEED
+        // override applies to. 1 = as recorded. The UI sets it from the live FEED dial: Ra goes with
+        // feed per rev squared, so (live / recorded override)^2.
+        public double FinishScale { get; set; } = 1.0;
+
+        // Mirrors LatheSimulator's cap, so a scaled finish never reads rougher than the engine would say.
+        private const double MaxTrackedRa = 50.0;
+
         // Markers [0, _markersStarted) have been reached.
         private int _markersStarted;
 
@@ -65,6 +79,7 @@ namespace FanucSimulator
             {
                 Stock = Timeline.StartStock.Clone();
                 _applied = 0;
+                _partialIndex = -1;
                 _markersStarted = 0;
                 _recordsStarted = 0;
             }
@@ -74,13 +89,13 @@ namespace FanucSimulator
             var atEnd = IsAtEnd;
             while (_applied < events.Count && (atEnd || events[_applied].EndTime <= t))
             {
-                Carve(events[_applied], 1.0);
+                CarveTo(_applied, 1.0);
                 _applied++;
             }
 
             var current = CurrentEvent;
             if (current != null && current.Duration > 0)
-                Carve(current, (t - current.StartTime) / current.Duration);
+                CarveTo(_applied, (t - current.StartTime) / current.Duration);
 
             var markers = Timeline.Markers;
             while (_markersStarted < markers.Count && (atEnd || markers[_markersStarted].Time <= t))
@@ -88,6 +103,63 @@ namespace FanucSimulator
 
             while (_recordsStarted < _records.Length && (atEnd || _records[_recordsStarted].Time <= t))
                 _recordsStarted++;
+        }
+
+        // ---- Playing at live override rates ----
+        // `rate` says how fast each event plays against how it was recorded: timeline seconds per
+        // second of machine time. 1 = as recorded, 2 = twice as fast (the override turned up), 0 =
+        // stopped (FEED at 0%: the machine is still in cycle, but the axes don't move).
+
+        // Where the playhead gets to after `machineSeconds` of machine time from now, and whether it
+        // stopped on a rate-0 event (in which case all of that time was spent standing still).
+        public (double Time, bool Stalled) TimeAfter(double machineSeconds, Func<TimelineEvent, double> rate)
+        {
+            var t = Time;
+            var budget = machineSeconds;
+            var events = Timeline.Events;
+            var i = Math.Min(_applied, events.Count);
+            while (budget > 0 && t < Timeline.Duration)
+            {
+                while (i < events.Count && events[i].EndTime <= t)
+                    i++;
+                if (i >= events.Count)
+                    return (Timeline.Duration, false);
+
+                var ev = events[i];
+                var r = rate(ev);
+                if (r <= 0)
+                    return (t, true);
+                var needed = (ev.EndTime - t) / r;
+                if (needed <= budget)
+                {
+                    budget -= needed;
+                    t = ev.EndTime;
+                    i++;
+                }
+                else
+                {
+                    t += budget * r;
+                    budget = 0;
+                }
+            }
+            return (Math.Min(t, Timeline.Duration), false);
+        }
+
+        // Machine time to play the timeline from `from` to `to` at the given rates. A rate-0 event
+        // counts at its recorded time: this is for totting up a run that did get through it.
+        public double MachineSecondsBetween(double from, double to, Func<TimelineEvent, double> rate)
+        {
+            var total = 0.0;
+            foreach (var ev in Timeline.Events)
+            {
+                var start = Math.Max(ev.StartTime, from);
+                var end = Math.Min(ev.EndTime, to);
+                if (end <= start)
+                    continue;
+                var r = rate(ev);
+                total += (end - start) / (r > 0 ? r : 1);
+            }
+            return total;
         }
 
         // The event in progress at the current time, or null between events and at the end.
@@ -244,20 +316,36 @@ namespace FanucSimulator
             return null;
         }
 
-        private void Carve(TimelineEvent ev, double fraction)
+        // Carves event `index` from wherever it got to up to `fraction`. An event carved in one go
+        // (the usual case, and always when seeking straight to the end) is one carve with exactly the
+        // engine's arguments, so the replay matches the engine bit for bit.
+        private void CarveTo(int index, double fraction)
         {
-            if (ev.Carve == CarveKind.None)
+            var ev = Timeline.Events[index];
+            var from = _partialIndex == index ? _partialFraction : 0.0;
+            fraction = Math.Clamp(fraction, 0, 1);
+            if (fraction >= 1)
+                _partialIndex = -1;
+            else
+                (_partialIndex, _partialFraction) = (index, Math.Max(from, fraction));
+
+            if (ev.Carve == CarveKind.None || fraction <= from)
                 return;
 
-            fraction = Math.Clamp(fraction, 0, 1);
+            var (z1, x1) = from <= 0 ? (ev.CarveZ1, ev.CarveX1) : (Lerp(ev.CarveZ1, ev.CarveZ2, from), Lerp(ev.CarveX1, ev.CarveX2, from));
             var z2 = Lerp(ev.CarveZ1, ev.CarveZ2, fraction);
             var x2 = Lerp(ev.CarveX1, ev.CarveX2, fraction);
-            // Part-way through, the moving end is where the tool is, not a real end of the cut.
+            // Only the cut's real ends reach into the next sample; where carving stopped part-way (the
+            // tool's position) or picks up again is a join, not an end.
+            var reachStart = from <= 0 && ev.CarveReachStart;
             var reachEnd = fraction >= 1 && ev.CarveReachEnd;
+            var ra = ev.CarveRa;
+            if (ev.FeedOverrideApplies && FinishScale != 1.0 && !double.IsNaN(ra))
+                ra = Math.Min(ra * FinishScale, MaxTrackedRa);
             if (ev.Carve == CarveKind.Outer)
-                Stock.CarveOuter(ev.CarveZ1, ev.CarveX1, z2, x2, ev.CarveRa, ev.CarveReachStart, reachEnd);
+                Stock.CarveOuter(z1, x1, z2, x2, ra, reachStart, reachEnd);
             else
-                Stock.CarveInner(ev.CarveZ1, ev.CarveX1, z2, x2, ev.CarveRa, ev.CarveReachStart, reachEnd);
+                Stock.CarveInner(z1, x1, z2, x2, ra, reachStart, reachEnd);
         }
 
         // Exact at f == 1 (returns b itself), so a fully carved segment matches the engine's own carve

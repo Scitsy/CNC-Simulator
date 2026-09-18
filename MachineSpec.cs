@@ -46,6 +46,14 @@
         // point to replace once the real machine is timed. Adjustable on the SYSTEM screen.
         public const double SpindleRampSecondsTypical = 3.0;
 
+        // RAPID override dial: F0 / 25 / 50 / 100 % (from the panel photo, 2026-08-25). The F0 speed is
+        // not a percentage - it is the control's parameter 1421. PLACEHOLDER: not read from this
+        // machine yet; 10% of rapid until it is. Adjustable on the SYSTEM screen.
+        public const double RapidF0PlaceholderMmPerMin = RapidTraverseMmPerMin * 0.10;
+
+        // FEED override dial: 0 to 150 % in 10 % steps (from the same photo).
+        public const double MaxFeedOverride = 1.5;
+
         // Turret. Twelve physical pockets, servo-indexed, but the tool holders are double-sided
         // (confirmed by the machine's owner, 2026-09-01) - each pocket mounts two tools front/back,
         // so the T-word addresses 24 positions, matching the panel's TURRET dial (which reads 1-24,

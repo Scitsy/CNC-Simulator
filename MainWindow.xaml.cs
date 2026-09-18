@@ -126,6 +126,7 @@ namespace FanucSimulator
             PopulateHelpScreen();
             BuildDualKeyGrid();
             BuildTurretDialRing();
+            BuildOverrideDials();
             LoadRecentFilesList();
             RefreshRecentFilesUi();
             SetMode("EDIT");
@@ -174,12 +175,11 @@ namespace FanucSimulator
             // The engine has already finished this chunk, so where it resumes from is settled now.
             // Everything the operator sees happens once playback reaches the end of it.
             _resumeIndex = result.Paused ? result.NextBlockIndex : 0;
-            var seconds = _sim.SimulatedSecondsElapsed;
-
             PresentRun(() =>
             {
-                _cycleSimulatedSeconds += seconds;
-                _runSimulatedSeconds += seconds;
+                // Machine time as it was actually run - the override dials can change it mid-run.
+                _cycleSimulatedSeconds += _presentedSeconds;
+                _runSimulatedSeconds += _presentedSeconds;
 
                 if (result.Paused)
                     Log(_sim.SingleBlock
@@ -908,6 +908,7 @@ namespace FanucSimulator
                 return;
 
             var blocks = _parser.Parse(CommandLineInput.Text);
+            ApplyOverrides();
             _sim.RunProgram(blocks);
             CommandLineInput.Clear();
 
@@ -1496,6 +1497,7 @@ namespace FanucSimulator
             _sim.BlockSkip = BlockSkipKey.IsChecked == true;
             _sim.OptionalStop = OptStopKey.IsChecked == true;
             ApplyMachineParameters();
+            ApplyOverrides();
         }
 
         private void EStop_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
