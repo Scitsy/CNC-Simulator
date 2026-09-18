@@ -1693,5 +1693,62 @@ Console.WriteLine();
         g71.Messages.Any(m => m.Contains("Roughing complete, 6 passes")));
 }
 
+// ---- [86] G74/G75 X-direction values are radial (per side) ----
+{
+    Console.WriteLine("[86] G74/G75: P and the G75 retract are radial, so they count double on X");
+
+    // G75 P1000 = 1mm per side = 2mm on the diameter: X40 -> X30 in 5 pecks, not 10.
+    var groove = new LatheSimulator();
+    groove.Offsets.GetOrCreateTool(1).Type = ToolType.Grooving;
+    groove.RunProgram(new GCodeParser().Parse(
+        "G21\nG99\nT0101\nM03 S800\nG00 X40 Z-10\nG75 X30 Z-10 P1000 F0.05\nM30\n"));
+    var plunges = groove.LastTimeline!.Events.Count(e => e.Kind == TimelineEventKind.Feed && e.Line == 6);
+    Check("G75 P1000 from X40 to X30 is 5 pecks of 1mm per side", plunges == 5);
+
+    // Each peck backs off R per side: R0.5 -> 1mm on the diameter.
+    var backOffs = groove.LastTimeline!.Events
+        .Where(e => e.Kind == TimelineEventKind.Rapid && e.Line == 6 && e.ToX > e.FromX)
+        .Select(e => e.ToX - e.FromX).ToList();
+    Check("G75 backs off 0.5mm per side (1mm on X) between pecks",
+        backOffs.Count >= 4 && backOffs.Take(4).All(d => Math.Abs(d - 1.0) < 1e-9));
+
+    // G74 P2000 = 2mm per side = 4mm on the diameter: X0 -> X10 at X0, 4, 8, 10.
+    var drill = new LatheSimulator();
+    drill.Offsets.GetOrCreateTool(2).Type = ToolType.Drill;
+    drill.Offsets.GetOrCreateTool(2).Width = 6;
+    drill.RunProgram(new GCodeParser().Parse(
+        "G21\nG99\nT0202\nM03 S800\nG00 X0 Z2\nG74 X10 Z-5 P2000 Q2000 F0.1\nM30\n"));
+    Check("G74 P2000 from X0 to X10 steps 4mm on the diameter (4 positions)",
+        drill.Messages.Any(m => m.Contains("4 X position(s)")));
+}
+
+// ---- [87] G71/G72 finishing shape must be monotonic: PS0064 / PS0329 ----
+{
+    Console.WriteLine("[87] G71/G72 shape rules: type I (one axis in the P block) has no pockets");
+    List<Alarm> Rough(string pBlock, string rest)
+    {
+        var sim = new LatheSimulator { StockDiameter = 50, StockLength = 80 };
+        sim.ResetStockProfile();
+        return RunFull(sim, new GCodeParser().Parse(
+            "G21\nG99\nT0101\nM03 S1000\nG00 X52 Z2\nG71 U2 R0.5\nG71 P10 Q90 U0.4 W0.1 F0.2\n" +
+            pBlock + "\n" + rest + "\nM30\n"), out _);
+    }
+
+    // A profile that grows steadily toward the chuck - fine as type I.
+    var plain = Rough("N10 G00 X30", "N20 G01 Z-20\nN30 X40 Z-30\nN90 G01 Z-50");
+    Check("type I, steadily growing profile: no alarm", plain.Count == 0);
+
+    // The same shape with a relief groove in it (X40 -> X34 -> X40): a pocket.
+    const string pocket = "N20 G01 Z-20\nN30 X40\nN40 Z-30\nN50 X34\nN60 Z-35\nN70 X40\nN90 G01 Z-50";
+    var typeI = Rough("N10 G00 X30", pocket);
+    Check("type I (only X in the P block) with a pocket: PS0329", typeI.Any(a => a.Number == 329));
+    var typeII = Rough("N10 G00 X30 Z2", pocket);
+    Check("type II (X and Z in the P block) with the same pocket: no alarm", typeII.Count == 0);
+
+    // Doubling back along Z is never allowed, type II included.
+    var backZ = Rough("N10 G00 X30 Z2", "N20 G01 Z-20\nN30 X40 Z-15\nN90 G01 Z-50");
+    Check("a profile that doubles back along Z: PS0064, even as type II", backZ.Any(a => a.Number == 64));
+}
+
 Console.WriteLine($"===== TOTAL: {pass} passed, {fail} failed =====");
 Environment.Exit(fail == 0 ? 0 : 1);

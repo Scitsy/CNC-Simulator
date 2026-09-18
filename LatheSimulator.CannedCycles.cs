@@ -355,7 +355,9 @@ namespace FanucSimulator
             // Q and P are always in microns (1/1000 mm) on a real Fanuc control, regardless of
             // G20/G21 - the same well-known quirk as G75's P/Q.
             var peckZ = block.Params.TryGetValue("Q", out var qVal) ? Math.Abs(qVal) / 1000.0 : 0.5;
-            var stepX = block.Params.TryGetValue("P", out var pVal) ? Math.Abs(pVal) / 1000.0 : 0.0;
+            // P is a radial shift (per side, confirmed by the machine's owner 2026-09-18), so it
+            // moves the diameter X by twice as much.
+            var stepX = 2 * (block.Params.TryGetValue("P", out var pVal) ? Math.Abs(pVal) / 1000.0 : 0.0);
             var retract = block.Params.TryGetValue("R", out var rVal) ? Math.Abs(ToMm(rVal)) : _drillingRetract;
             var feed = block.Params.TryGetValue("Feed", out var f) ? f : FeedRate;
 
@@ -407,9 +409,13 @@ namespace FanucSimulator
 
             // P and Q are always in microns (1/1000 mm) on a real Fanuc control, regardless of
             // G20/G21 - a well-known quirk of these two address words in canned cycles.
-            var peckX = block.Params.TryGetValue("P", out var pVal) ? Math.Abs(pVal) / 1000.0 : 0.5;
+            // P (peck depth) and R (retract) are X-direction distances given per side - radial, not
+            // diametric (confirmed by the machine's owner 2026-09-18) - so each moves the diameter X
+            // by twice its value. Q steps along Z and applies as it is.
+            var peckRadial = block.Params.TryGetValue("P", out var pVal) ? Math.Abs(pVal) / 1000.0 : 0.5;
+            var peckX = 2 * peckRadial;
             var stepZ = block.Params.TryGetValue("Q", out var qVal) ? Math.Abs(qVal) / 1000.0 : 0.0;
-            var retract = block.Params.TryGetValue("R", out var rVal) ? Math.Abs(ToMm(rVal)) : _groovingRetract;
+            var retract = 2 * (block.Params.TryGetValue("R", out var rVal) ? Math.Abs(ToMm(rVal)) : _groovingRetract);
             var feed = block.Params.TryGetValue("Feed", out var f) ? f : FeedRate;
 
             // External grooving plunges inward (X decreases toward targetX, deeper into the OD);
@@ -419,7 +425,7 @@ namespace FanucSimulator
 
             var startX = X;
             var zPositions = BuildGroovePlunges(Z, targetZ, stepZ);
-            Messages.Add($"G75: Grooving cycle, {zPositions.Count} plunge position(s), peck {Len(peckX)}{LenUnit}");
+            Messages.Add($"G75: Grooving cycle, {zPositions.Count} plunge position(s), peck {Len(peckRadial)}{LenUnit} per side");
 
             SetFeedRate(feed);
             foreach (var z in zPositions)
@@ -583,6 +589,9 @@ namespace FanucSimulator
             if (rawContour.Count == 0)
                 return;
 
+            if (!CheckRoughingShapeIsMonotonic(isFacing, blocks, (int)ns, rawContour))
+                return;
+
             var du = block.Params.TryGetValue("U", out var duVal) ? ToMm(duVal) : 0;
             var dw = block.Params.TryGetValue("W", out var dwVal) ? ToMm(dwVal) : 0;
             var roughFeed = block.Params.TryGetValue("Feed", out var f) ? f : FeedRate;
@@ -598,6 +607,55 @@ namespace FanucSimulator
             Messages.Add($"G{code}: Roughing cycle, {offsetContour.Count} contour points, allowance U{Len(du)} W{Len(dw)}");
 
             RunRoughingPasses(offsetContour, roughFeed, isFacing, code);
+        }
+
+        // The finishing shape a G71/G72 is given has to move steadily one way, as on the real control:
+        // - Along the axis the passes run (Z for G71, X for G72) it may never double back, in either
+        //   type: PS0064.
+        // - Type I also may not double back on the depth axis (X for G71, Z for G72), so it has no
+        //   pockets: PS0329. Type II allows pockets.
+        // The control picks the type from the P block itself: one axis in it is type I, both X and Z
+        // (even an unchanged Z, or W0) is type II.
+        private bool CheckRoughingShapeIsMonotonic(bool isFacing, List<GCodeParser.Block> blocks, int ns, List<(double X, double Z)> shape)
+        {
+            var code = isFacing ? 72 : 71;
+            var pBlock = blocks.First(b => b.Params.TryGetValue("N", out var n) && (int)n == ns);
+            var hasX = pBlock.Params.ContainsKey("X") || pBlock.Params.ContainsKey("U");
+            var hasZ = pBlock.Params.ContainsKey("Z") || pBlock.Params.ContainsKey("W");
+            var typeII = hasX && hasZ;
+
+            static bool Monotonic(IEnumerable<double> values)
+            {
+                int direction = 0;
+                double? last = null;
+                foreach (var v in values)
+                {
+                    if (last.HasValue && Math.Abs(v - last.Value) > 1e-6)
+                    {
+                        var step = Math.Sign(v - last.Value);
+                        if (direction != 0 && step != direction)
+                            return false;
+                        direction = step;
+                    }
+                    last = v;
+                }
+                return true;
+            }
+
+            var along = shape.Select(p => isFacing ? p.X : p.Z);
+            var depth = shape.Select(p => isFacing ? p.Z : p.X);
+
+            if (!Monotonic(along))
+            {
+                Alarms.Add(new Alarm(64, $"G{code}: The finishing shape is not a monotonous change (first axes) - N{ns} profile doubles back along {(isFacing ? "X" : "Z")}"));
+                return false;
+            }
+            if (!typeII && !Monotonic(depth))
+            {
+                Alarms.Add(new Alarm(329, $"G{code}: The finishing shape is not a monotonous change (second axes) - type I profile (only {(isFacing ? "Z" : "X")} in N{ns}) has a pocket; put both X and Z in N{ns} for type II"));
+                return false;
+            }
+            return true;
         }
 
         // Generic pass-clamping: for a pass at depth `passPrimary` on the stepping axis, the cut

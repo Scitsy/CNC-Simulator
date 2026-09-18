@@ -1,4 +1,4 @@
-# FANUC 0i-TF Plus Lathe Simulator
+﻿# FANUC 0i-TF Plus Lathe Simulator
 
 [![CI](https://github.com/Scitsy/CNC-Simulator/actions/workflows/ci.yml/badge.svg)](https://github.com/Scitsy/CNC-Simulator/actions/workflows/ci.yml)
 
@@ -20,7 +20,8 @@ runs real conditionals and loops, not just token substitution.
 - **Motion**: G00/G01/G02/G03 with real linear/arc interpolation, G20/G21 inch/metric, G96/G97
   constant surface speed vs. constant RPM (correct SFM and m/min formulae), G28 reference return.
 - **Canned cycles**: the single cycles G90 OD/ID turning, G92 threading and G94 facing (modal, with
-  taper), plus the multiple repetitive cycles G70 finishing, G71/G72 rough turning/facing, G74 peck
+  taper), plus the multiple repetitive cycles G70 finishing, G71/G72 rough turning/facing (type I
+  or II picked from the P block as on the control, with its PS0064/PS0329 shape alarms), G74 peck
   drilling, G75 grooving (external and internal/ID), G76 threading (multi-pass, equal cutting area,
   spring passes), G32/G33 single-block threading, and G80 to cancel.
 - **Cutter nose radius compensation**: G41/G42/G40 - a true perpendicular-to-travel offset with
@@ -117,7 +118,7 @@ A few worth starting with:
 ## Testing
 
 `EngineTest/` is a headless console harness (source-linked against the same engine files, no test
-framework dependency) with 332 hand-rolled assertions covering every documented G/M-code, both
+framework dependency) with 339 hand-rolled assertions covering every documented G/M-code, both
 canned-cycle directions, macro control flow, geometry checks against several of the demo programs
 above, the catalog-persistence round-trip, and exact closed-form cycle-time checks. Runs
 automatically on every push via GitHub Actions (see the badge at the top of this file).
