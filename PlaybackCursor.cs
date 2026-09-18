@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace FanucSimulator
 {
@@ -29,10 +30,31 @@ namespace FanucSimulator
         // Markers [0, _markersStarted) have been reached.
         private int _markersStarted;
 
+        // Every event and marker in the order the engine recorded them, with the log counts at that
+        // point. The log shown is the counts at the first record not yet reached - so lines written
+        // between two moves appear as the first of those moves plays, never further ahead.
+        private readonly (double Time, int Messages, int Warnings, int Alarms)[] _records;
+        private readonly (int Messages, int Warnings, int Alarms) _finalLog;
+        private int _recordsStarted;
+
         public PlaybackCursor(MotionTimeline timeline)
         {
             Timeline = timeline;
             Stock = timeline.StartStock.Clone();
+
+            var merged = new List<(int Seq, double Time, int M, int W, int A)>();
+            foreach (var ev in timeline.Events)
+                merged.Add((ev.Seq, ev.StartTime, ev.MessagesBefore, ev.WarningsBefore, ev.AlarmsBefore));
+            foreach (var mk in timeline.Markers)
+                merged.Add((mk.Seq, mk.Time, mk.MessageCount, mk.WarningCount, mk.AlarmCount));
+            merged.Sort((a, b) => a.Seq.CompareTo(b.Seq));
+            _records = merged.Select(r => (r.Time, r.M, r.W, r.A)).ToArray();
+
+            // The closing marker is the last thing recorded, so it carries the run's full log.
+            _finalLog = timeline.Markers.Count > 0
+                ? (timeline.Markers[^1].MessageCount, timeline.Markers[^1].WarningCount, timeline.Markers[^1].AlarmCount)
+                : (0, 0, 0);
+
             Seek(0);
         }
 
@@ -44,6 +66,7 @@ namespace FanucSimulator
                 Stock = Timeline.StartStock.Clone();
                 _applied = 0;
                 _markersStarted = 0;
+                _recordsStarted = 0;
             }
             Time = t;
 
@@ -62,6 +85,9 @@ namespace FanucSimulator
             var markers = Timeline.Markers;
             while (_markersStarted < markers.Count && (atEnd || markers[_markersStarted].Time <= t))
                 _markersStarted++;
+
+            while (_recordsStarted < _records.Length && (atEnd || _records[_recordsStarted].Time <= t))
+                _recordsStarted++;
         }
 
         // The event in progress at the current time, or null between events and at the end.
@@ -152,6 +178,18 @@ namespace FanucSimulator
             }
         }
 
+        // The last N-number reached this run, or -1 if none yet.
+        public int SequenceNumber
+        {
+            get
+            {
+                for (int i = _markersStarted - 1; i >= 0; i--)
+                    if (Timeline.Markers[i].SequenceNumber >= 0)
+                        return Timeline.Markers[i].SequenceNumber;
+                return -1;
+            }
+        }
+
         // The machine state to show now: the moving block's while a move is in progress, otherwise
         // the state as of the last block reached.
         public MachineStateSnapshot? State
@@ -167,19 +205,13 @@ namespace FanucSimulator
             }
         }
 
-        // How much of the run's log to show now. A block's lines appear as soon as the block starts,
-        // which is when an operator would want to read "now doing G71...".
-        public (int Messages, int Warnings, int Alarms) RevealedLog
-        {
-            get
-            {
-                var markers = Timeline.Markers;
-                if (markers.Count == 0)
-                    return (0, 0, 0);
-                var m = markers[Math.Min(_markersStarted, markers.Count - 1)];
-                return (m.MessageCount, m.WarningCount, m.AlarmCount);
-            }
-        }
+        // How much of the run's log to show now: everything the engine had written by the first
+        // event or marker playback hasn't reached yet. A move's own lines therefore appear while it
+        // plays, and a canned cycle's "pass N" lines appear pass by pass rather than all at once.
+        public (int Messages, int Warnings, int Alarms) RevealedLog =>
+            _recordsStarted < _records.Length
+                ? (_records[_recordsStarted].Messages, _records[_recordsStarted].Warnings, _records[_recordsStarted].Alarms)
+                : _finalLog;
 
         // Every segment drawn so far this run, the in-progress one cut off at the tool.
         public IEnumerable<(double X1, double Z1, double X2, double Z2, TimelineEventKind Kind)> SegmentsSoFar()

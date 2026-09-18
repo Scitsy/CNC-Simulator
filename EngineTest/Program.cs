@@ -1524,5 +1524,79 @@ Console.WriteLine();
     }
 }
 
+// ---- [83] Playback's log keeps pace with the tool, even inside a canned cycle ----
+{
+    Console.WriteLine("[83] The log revealed during playback never runs ahead of the tool");
+
+    // A G71 cycle logs every pass from inside one block. Revealing the log block by block showed
+    // "Roughing complete" while the tool was still on its first cut; found by live testing.
+    var sim = new LatheSimulator { StockDiameter = 50, StockLength = 80 };
+    sim.ResetStockProfile();
+    sim.RunProgram(new GCodeParser().Parse(File.ReadAllText(@"..\NCFiles\O0003_roughing_finishing_g71_g70.nc")));
+    var tl = sim.LastTimeline!;
+    var cursor = new PlaybackCursor(tl);
+
+    var firstCut = tl.Events.First(e => e.Kind == TimelineEventKind.Feed);
+    cursor.Seek(firstCut.StartTime + firstCut.Duration / 2);
+    var shown = sim.Messages.Take(cursor.RevealedLog.Messages).ToList();
+    Check("during the first cut, the cycle is not yet reported complete",
+        !shown.Any(m => m.Contains("Roughing complete")));
+    Check("but the cut in progress has been introduced", shown.Count > 0);
+
+    var complete = sim.Messages.FindIndex(m => m.Contains("Roughing complete"));
+    cursor.Seek(tl.Duration);
+    Check("by the end, everything including 'Roughing complete' is shown",
+        complete >= 0 && cursor.RevealedLog.Messages == sim.Messages.Count);
+
+    // Revealing only ever moves forward as the playhead does.
+    var monotonic = true;
+    var previous = -1;
+    for (int i = 0; i <= 400; i++)
+    {
+        cursor.Seek(tl.Duration * i / 400);
+        monotonic &= cursor.RevealedLog.Messages >= previous;
+        previous = cursor.RevealedLog.Messages;
+    }
+    Check("the revealed log never shrinks as playback advances", monotonic);
+
+    // A collision warning appears when that rapid is reached, not a move early.
+    var crashSim = new LatheSimulator();
+    crashSim.RunProgram(new GCodeParser().Parse("G21\nT0101\nG00 X100 Z5\nG00 X40 Z-20\nG00 X100\nM30\n"));
+    var crashTl = crashSim.LastTimeline!;
+    var crash = crashTl.Events.First(e => e.Kind == TimelineEventKind.Collision);
+    var crashCursor = new PlaybackCursor(crashTl);
+    crashCursor.Seek(crash.StartTime - 1e-6);
+    Check("just before the colliding rapid, its warning is not yet shown", crashCursor.RevealedLog.Warnings == 0);
+    crashCursor.Seek(crash.StartTime);
+    Check("once it starts, the warning is shown", crashCursor.RevealedLog.Warnings == 1);
+}
+
+// ---- [84] Playback reports the last N-number reached ----
+{
+    Console.WriteLine("[84] Playback shows the last N-number reached, even N-only blocks");
+    // N10 and N30 are blocks with nothing but an N word: they take no time, so they can only be
+    // seen through what the timeline recorded, never by sampling the running line.
+    var sim = new LatheSimulator();
+    sim.RunProgram(new GCodeParser().Parse("G21\nT0101\nN10\nG98 G01 X50 Z-10 F100\nN30\nG01 Z-20\nM30\n"));
+    var tl = sim.LastTimeline!;
+    var cursor = new PlaybackCursor(tl);
+    // A program whose first N word comes after a move reports none during that move.
+    var early = new LatheSimulator();
+    early.RunProgram(new GCodeParser().Parse("G21\nT0101\nG98 G01 X50 Z-10 F100\nN30\nG01 Z-20\nM30\n"));
+    var earlyCursor = new PlaybackCursor(early.LastTimeline!);
+    var earlyCut = early.LastTimeline!.Events.First(e => e.Line == 3);
+    earlyCursor.Seek(earlyCut.StartTime + earlyCut.Duration / 2);
+    Check("before any N-numbered block is reached, none is reported", earlyCursor.SequenceNumber == -1);
+
+
+    var firstCut = tl.Events.First(e => e.Line == 4);
+    cursor.Seek(firstCut.StartTime + firstCut.Duration / 2);
+    Check("during the first cut, N10 is the last N reached", cursor.SequenceNumber == 10);
+
+    var secondCut = tl.Events.First(e => e.Line == 6);
+    cursor.Seek(secondCut.StartTime + secondCut.Duration / 2);
+    Check("during the second cut, N30 is the last N reached", cursor.SequenceNumber == 30);
+}
+
 Console.WriteLine($"===== TOTAL: {pass} passed, {fail} failed =====");
 Environment.Exit(fail == 0 ? 0 : 1);

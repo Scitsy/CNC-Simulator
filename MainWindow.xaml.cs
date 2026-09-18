@@ -150,6 +150,15 @@ namespace FanucSimulator
                 return;
             }
 
+            // CYCLE START during a run: resumes a hold, and is otherwise ignored - the cycle is
+            // already running.
+            if (IsInCycle)
+            {
+                if (_playState == PlaybackState.Held)
+                    TryResumeCycle();
+                return;
+            }
+
             if (_resumeIndex == 0)
             {
                 Console.Clear();
@@ -161,38 +170,43 @@ namespace FanucSimulator
             var blocks = _parser.Parse(GCodeInput.Text);
             var result = _sim.RunProgram(blocks, _resumeIndex);
 
-            _cycleSimulatedSeconds += _sim.SimulatedSecondsElapsed;
-            _runSimulatedSeconds += _sim.SimulatedSecondsElapsed;
-
-            foreach (var msg in _sim.Messages)
-                Log(msg, "success");
-            foreach (var alarm in _sim.Alarms)
-                Log(alarm.ToString(), "error");
-            foreach (var warning in _sim.Warnings)
-                Log(warning, "warning");
-
+            // The engine has already finished this chunk, so where it resumes from is settled now.
+            // Everything the operator sees happens once playback reaches the end of it.
             _resumeIndex = result.Paused ? result.NextBlockIndex : 0;
-            if (result.Paused)
-                Log(_sim.SingleBlock
-                        ? "[SINGLE BLOCK - press Cycle Start for the next block]"
-                        : "[Paused - press Execute to continue]", "info");
+            var seconds = _sim.SimulatedSecondsElapsed;
 
-            if (result.ProgramEnded)
+            PresentRun(() =>
             {
-                _partCount++;
-                _programEndLampOn = true;
-            }
+                _cycleSimulatedSeconds += seconds;
+                _runSimulatedSeconds += seconds;
 
-            UpdateDisplay();
-            RenderLathe();
-            RefreshOffsetGrids();
-            RefreshAlarmList();
-            RefreshMacroScreen();
-            if (_stock3DWindow?.IsLoaded == true) _stock3DWindow.Refresh();
+                if (result.Paused)
+                    Log(_sim.SingleBlock
+                            ? "[SINGLE BLOCK - press Cycle Start for the next block]"
+                            : "[Paused - press Execute to continue]", "info");
+
+                if (result.ProgramEnded)
+                {
+                    _partCount++;
+                    _programEndLampOn = true;
+                }
+
+                UpdateDisplay();
+                RenderLathe();
+                RefreshOffsetGrids();
+                RefreshAlarmList();
+                RefreshMacroScreen();
+                if (_stock3DWindow?.IsLoaded == true) _stock3DWindow.Refresh();
+            });
         }
 
         private void Reset_Click(object sender, RoutedEventArgs e)
         {
+            // RESET ends any run in progress on the spot, held or not.
+            AbortPlayback();
+            _lastSequenceNumber = 0;
+            _lastFollowedLine = 0;
+
             // Carries the current offset table forward - a real control's RESET clears the
             // run/alarm state but never touches the tool/work offset tables.
             _sim = new LatheSimulator(_sim.Offsets);
@@ -225,6 +239,9 @@ namespace FanucSimulator
 
         private void ApplyStock_Click(object sender, RoutedEventArgs e)
         {
+            if (RefuseInCycle("Changing the stock"))
+                return;
+
             // The boxes are in whatever unit is active; the engine keeps stock in mm like everything
             // else, so convert on the way in exactly as a programmed coordinate would be.
             if (double.TryParse(StockDiameterInput.Text, out var dia) && dia > 0)
@@ -287,6 +304,8 @@ namespace FanucSimulator
 
         private void Load_Click(object sender, RoutedEventArgs e)
         {
+            if (RefuseInCycle("Loading a program"))
+                return;
             if (!ConfirmDiscardUnsavedChanges())
                 return;
 
@@ -885,23 +904,23 @@ namespace FanucSimulator
                 return;
             }
 
+            if (RefuseInCycle("MDI"))
+                return;
+
             var blocks = _parser.Parse(CommandLineInput.Text);
-            var result = _sim.RunProgram(blocks);
-
-            foreach (var msg in _sim.Messages)
-                Log(msg, "success");
-            foreach (var alarm in _sim.Alarms)
-                Log(alarm.ToString(), "error");
-            foreach (var warning in _sim.Warnings)
-                Log(warning, "warning");
-
+            _sim.RunProgram(blocks);
             CommandLineInput.Clear();
-            UpdateDisplay();
-            RenderLathe();
-            RefreshOffsetGrids();
-            RefreshAlarmList();
-            RefreshMacroScreen();
-            if (_stock3DWindow?.IsLoaded == true) _stock3DWindow.Refresh();
+
+            // MDI moves the machine too, so it plays back like any other run.
+            PresentRun(() =>
+            {
+                UpdateDisplay();
+                RenderLathe();
+                RefreshOffsetGrids();
+                RefreshAlarmList();
+                RefreshMacroScreen();
+                if (_stock3DWindow?.IsLoaded == true) _stock3DWindow.Refresh();
+            });
         }
 
         private void ModeButton_Click(object sender, RoutedEventArgs e)
@@ -1237,36 +1256,102 @@ namespace FanucSimulator
             return match.Success ? $"O{int.Parse(match.Groups[1].Value):D4}" : "O0000";
         }
 
-        // First few program lines, for POS(ALL)'s program pane. Deliberately no highlighted "current"
-        // line: a real control highlights the block it is executing, but this simulator runs a whole
-        // program to completion inside one Execute click, so there is never a genuine current block
-        // to point at - faking one would just be decoration.
-        private string ProgramPreviewText()
+        private string[] ProgramLines() => GCodeInput.Text.Replace("\r\n", "\n").Split('\n');
+
+        // POS(ALL)'s program pane. While a run is playing it shows the executing block at the top,
+        // highlighted - the cyan bar in the reference photo - with the blocks that follow it. At rest
+        // there is no executing block, so it just shows the start of the program, unhighlighted.
+        private void ShowProgramPreview(int runningLine)
         {
-            var lines = GCodeInput.Text.Replace("\r\n", "\n").Split('\n');
-            return string.Join(Environment.NewLine, lines.Take(9).Select(l => l.TrimEnd()));
+            var lines = ProgramLines();
+            var first = runningLine > 0 ? runningLine - 1 : 0;
+
+            AllProgramPreview.Inlines.Clear();
+            for (int i = first; i < lines.Length && i < first + 9; i++)
+            {
+                var text = lines[i].TrimEnd();
+                var run = new System.Windows.Documents.Run(text.Length == 0 ? " " : text);
+                if (i == runningLine - 1)
+                {
+                    run.Background = (Brush)FindResource("ScreenHeader");
+                    run.Foreground = (Brush)FindResource("SoftKeyText");
+                }
+                if (i > first)
+                    AllProgramPreview.Inlines.Add(new System.Windows.Documents.LineBreak());
+                AllProgramPreview.Inlines.Add(run);
+            }
+        }
+
+        // The N-number the control shows beside the O-number: the last sequence number reached. A
+        // block without one leaves the previous number showing, as on the machine.
+        private int _lastSequenceNumber;
+        // Read from the timeline, which records every block's N word as it is reached. Sampling the
+        // running line instead missed N-only blocks almost every time, because they take no time.
+        private int CurrentSequenceNumber()
+        {
+            if (_cursor != null)
+            {
+                if (_cursor.SequenceNumber is var n and >= 0)
+                    _lastSequenceNumber = n;
+            }
+            else if (_sim.LastTimeline is { } finished)
+            {
+                // At rest (or with Animate off): the last N-number the finished run reached.
+                for (int i = finished.Markers.Count - 1; i >= 0; i--)
+                    if (finished.Markers[i].SequenceNumber >= 0)
+                    {
+                        _lastSequenceNumber = finished.Markers[i].SequenceNumber;
+                        break;
+                    }
+            }
+            return _lastSequenceNumber;
+        }
+
+        // On the PROGRAM screen the editor's cursor follows the executing block, like the machine's.
+        private int _lastFollowedLine;
+        private void FollowRunningLineInEditor(int runningLine)
+        {
+            if (runningLine <= 0 || runningLine == _lastFollowedLine || runningLine > GCodeInput.LineCount)
+                return;
+            _lastFollowedLine = runningLine;
+            GCodeInput.CaretIndex = GCodeInput.GetCharacterIndexFromLineIndex(runningLine - 1);
+            GCodeInput.ScrollToLine(runningLine - 1);
         }
 
         private void UpdateDisplay()
         {
-            AbsXDisplay.Text = AxisLine('X', _sim.X);
-            AbsZDisplay.Text = AxisLine('Z', _sim.Z);
-            AbsXBigDisplay.Text = FormatPos(_sim.X);
-            AbsZBigDisplay.Text = FormatPos(_sim.Z);
+            // During playback everything below shows the playhead's moment, not the end of the run
+            // the engine has already finished; at rest these are simply the engine's own values.
+            var pos = _cursor?.ToolProgrammed ?? (_sim.X, _sim.Z);
+            var state = _cursor?.State;
+            var spindleRpm = state?.SpindleRpm ?? _sim.SpindleSpeed;
+            var spindleDir = state?.SpindleDir ?? _sim.SpindleDir;
+            var coolantOn = state?.CoolantOn ?? _sim.CoolantOn;
+            var currentTool = state?.Tool ?? _sim.CurrentTool;
+            var feedRate = state?.FeedRate ?? _sim.FeedRate;
+
+            AbsXDisplay.Text = AxisLine('X', pos.X);
+            AbsZDisplay.Text = AxisLine('Z', pos.Z);
+            AbsXBigDisplay.Text = FormatPos(pos.X);
+            AbsZBigDisplay.Text = FormatPos(pos.Z);
 
             // RELATIVE measures from its own operator-zeroable origin, so it only matches ABSOLUTE
             // until someone zeroes it - which is why the reference photo shows the two agreeing.
-            RelUDisplay.Text = AxisLine('U', _sim.RelativeU);
-            RelWDisplay.Text = AxisLine('W', _sim.RelativeW);
+            var relU = pos.X - _sim.RelativeOriginX;
+            var relW = pos.Z - _sim.RelativeOriginZ;
+            RelUDisplay.Text = AxisLine('U', relU);
+            RelWDisplay.Text = AxisLine('W', relW);
 
-            // Blocks run to completion within a single RunProgram call, so at rest there is never any
-            // residual commanded motion left to report - always zero, same as the idle real machine.
-            DistXDisplay.Text = AxisLine('X', 0);
-            DistZDisplay.Text = AxisLine('Z', 0);
+            // What's left of the move in progress. Zero at rest, like the idle machine - and now,
+            // with runs playing back at machine speed, genuinely non-zero mid-move.
+            var toGo = _cursor?.DistanceToGo ?? (0, 0);
+            DistXDisplay.Text = AxisLine('X', toGo.X);
+            DistZDisplay.Text = AxisLine('Z', toGo.Z);
 
-            var workOffset = _sim.Offsets.WorkOffsets.TryGetValue(_sim.Modal.ActiveWorkOffset, out var wo) ? wo : null;
-            var machineX = _sim.X + (workOffset?.X ?? 0);
-            var machineZ = _sim.Z + (workOffset?.Z ?? 0);
+            var workOffsetNumber = state?.WorkOffset ?? _sim.Modal.ActiveWorkOffset;
+            var workOffset = _sim.Offsets.WorkOffsets.TryGetValue(workOffsetNumber, out var wo) ? wo : null;
+            var machineX = pos.X + (workOffset?.X ?? 0);
+            var machineZ = pos.Z + (workOffset?.Z ?? 0);
             MachXDisplay.Text = AxisLine('X', machineX);
             MachZDisplay.Text = AxisLine('Z', machineZ);
 
@@ -1277,7 +1362,7 @@ namespace FanucSimulator
             // last commanded rather than a hardcoded constant, so the screen never claims a state the
             // program didn't ask for.
             var m = _sim.Modal;
-            ModalMotionDisplay.Text = m.Motion switch
+            ModalMotionDisplay.Text = (state?.Motion ?? m.Motion) switch
             {
                 MotionMode.Rapid => "G00",
                 MotionMode.Linear => "G01",
@@ -1295,10 +1380,11 @@ namespace FanucSimulator
             };
             ModalUnitsDisplay.Text = m.Units == UnitsMode.Metric ? "G21" : "G20";
             ModalFeedDisplay.Text = m.Feed == FeedMode.PerRevolution ? "G99" : "G98";
-            ModalSpindleDisplay.Text = m.Spindle == SpindleMode.ConstantSurfaceSpeed ? "G96" : "G97";
-            ModalCompDisplay.Text = m.Comp switch { CutterComp.Left => "G41", CutterComp.Right => "G42", _ => "G40" };
-            ModalWorkOffsetDisplay.Text = $"G{m.ActiveWorkOffset}";
-            ModalToolDisplay.Text = $"T{_sim.CurrentTool:D2}";
+            var css = state?.Css ?? m.Spindle == SpindleMode.ConstantSurfaceSpeed;
+            ModalSpindleDisplay.Text = css ? "G96" : "G97";
+            ModalCompDisplay.Text = (state?.Comp ?? m.Comp) switch { CutterComp.Left => "G41", CutterComp.Right => "G42", _ => "G40" };
+            ModalWorkOffsetDisplay.Text = $"G{workOffsetNumber}";
+            ModalToolDisplay.Text = $"T{currentTool:D2}";
             ModalMacroDisplay.Text = _sim.ModalMacroActive ? "G66" : "G67";
 
             ModalPlaneDisplay.Text = $"G{m.Plane}";
@@ -1320,38 +1406,40 @@ namespace FanucSimulator
 
             // Coolant belongs in the modal block as its M-code, the way a real control lists it -
             // spelling out "COOLANT ON/OFF" overflowed the column and isn't what the machine shows.
-            ModalCoolantDisplay.Text = "M   " + (_sim.CoolantOn ? "08" : "09");
+            ModalCoolantDisplay.Text = "M   " + (coolantOn ? "08" : "09");
 
             // The M field on a real POS screen shows the M-code currently in effect; spindle
             // direction is the only continuously-held M state this simulator actually tracks.
-            ModalMCodeDisplay.Text = "M   " + _sim.SpindleDir switch { 1 => "03", -1 => "04", _ => "05" };
+            ModalMCodeDisplay.Text = "M   " + spindleDir switch { 1 => "03", -1 => "04", _ => "05" };
 
-            FeedDisplay.Text = $"{FormatFeed(_sim.FeedRate)} {FeedUnitLabel()}";
-            AllFeedDisplay.Text = $"{FormatFeed(_sim.FeedRate)} {FeedUnitLabel()}";
+            FeedDisplay.Text = $"{FormatFeed(feedRate)} {FeedUnitLabel()}";
+            AllFeedDisplay.Text = $"{FormatFeed(feedRate)} {FeedUnitLabel()}";
 
-            var dirLabel = _sim.SpindleDir switch { 1 => "FWD", -1 => "REV", _ => "STOPPED" };
-            var modeLabel = _sim.Modal.Spindle == SpindleMode.ConstantSurfaceSpeed ? "CSS" : "RPM";
-            SpindleDisplay.Text = _sim.SpindleDir != 0 ? $"{_sim.SpindleSpeed:F0} RPM ({modeLabel}) {dirLabel}" : "STOPPED";
-            AllSpindleDisplay.Text = $"S {_sim.SpindleSpeed,8:F0}      {dirLabel}";
+            var dirLabel = spindleDir switch { 1 => "FWD", -1 => "REV", _ => "STOPPED" };
+            var modeLabel = css ? "CSS" : "RPM";
+            SpindleDisplay.Text = spindleDir != 0 ? $"{spindleRpm:F0} RPM ({modeLabel}) {dirLabel}" : "STOPPED";
+            AllSpindleDisplay.Text = $"S {spindleRpm,8:F0}      {dirLabel}";
 
-            RelUBigDisplay.Text = FormatPos(_sim.RelativeU);
-            RelWBigDisplay.Text = FormatPos(_sim.RelativeW);
+            RelUBigDisplay.Text = FormatPos(relU);
+            RelWBigDisplay.Text = FormatPos(relW);
 
             // Panel status LEDs: passive readouts of real engine state, not controls.
             var litGreen = (SolidColorBrush)FindResource("OkGreen");
             var dimLed = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55));
             ProgramEndLed.Fill = _programEndLampOn ? litGreen : dimLed;
-            SpindleActiveLed.Fill = _sim.SpindleDir != 0 ? litGreen : dimLed;
+            SpindleActiveLed.Fill = spindleDir != 0 ? litGreen : dimLed;
 
             // Turret dial pointer follows the currently selected station (T-word) - a readout, like
             // the LEDs above, not a control. Shares TurretStartAngleDeg with BuildTurretDialRing so
             // the pointer actually lines up with the number it's pointing at.
             var stationAngle = 360.0 / MachineSpec.TurretStations;
-            var activeStation = _sim.CurrentTool >= 1 ? _sim.CurrentTool : 1;
+            var activeStation = currentTool >= 1 ? currentTool : 1;
             TurretPointerRotation.Angle = TurretStartAngleDeg + (activeStation - 1) * stationAngle;
 
-            ProgramIdDisplay.Text = $"{CurrentProgramNumber()} N00000";
-            AllProgramPreview.Text = ProgramPreviewText();
+            var runningLine = _cursor?.CurrentLine ?? 0;
+            ProgramIdDisplay.Text = $"{CurrentProgramNumber()} N{CurrentSequenceNumber():D5}";
+            ShowProgramPreview(runningLine);
+            FollowRunningLineInEditor(runningLine);
             RefreshStockUnitDisplay();
 
             UpdateStatsDisplay();
@@ -1362,8 +1450,9 @@ namespace FanucSimulator
 
         private void UpdateStatsDisplay()
         {
-            RunTimeDisplay.Text = FormatHms(TimeSpan.FromSeconds(_runSimulatedSeconds));
-            CycleTimeDisplay.Text = FormatHms(TimeSpan.FromSeconds(_cycleSimulatedSeconds));
+            // During playback both clocks tick up with the playhead rather than jumping at the end.
+            RunTimeDisplay.Text = FormatHms(TimeSpan.FromSeconds(_runSimulatedSeconds + PlaybackElapsed));
+            CycleTimeDisplay.Text = FormatHms(TimeSpan.FromSeconds(_cycleSimulatedSeconds + PlaybackElapsed));
             PartCountDisplay.Text = _partCount.ToString();
 
             // POS(ALL) carries its own copy of these in the right-hand column (the two sub-views lay
@@ -1408,6 +1497,8 @@ namespace FanucSimulator
         private void EStop_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
         {
             _emergencyStop = !_emergencyStop;
+            if (_emergencyStop)
+                HaltForEmergencyStop();
             UpdateEmgBadge();
             Log(_emergencyStop ? "EMERGENCY STOP engaged" : "EMERGENCY STOP released", _emergencyStop ? "error" : "success");
         }
@@ -1487,10 +1578,14 @@ namespace FanucSimulator
         private const double CanvasTopMargin = 50;    // spindle label above max diameter
         private const double CanvasBottomMargin = 20;
 
-        private void RenderLathe()
+        // Every existing caller (resize, zoom, pan, runs, resets) keeps calling this - during playback
+        // it simply draws the playback cursor's moment instead of the engine's end state.
+        private void RenderLathe() => RenderLathe(CurrentLatheView());
+
+        private void RenderLathe(LatheView view)
         {
             LatheCanvas.Children.Clear();
-            LatheCanvas.Background = _sim.CoolantOn ? CanvasBgCoolant : CanvasBgNormal;
+            LatheCanvas.Background = view.CoolantOn ? CanvasBgCoolant : CanvasBgNormal;
 
             // Auto-fit scale: a fixed 2px/mm scale either ran huge parts off-canvas or squeezed small
             // ones (e.g. ID drilling/boring, typically a fraction of the OD) into a barely-visible
@@ -1557,7 +1652,7 @@ namespace FanucSimulator
             var stockPixelDiameter = _sim.StockDiameter * scale;
             var stockLeft = PxX(-_sim.StockLength);
 
-            var stock = _sim.Stock;
+            var stock = view.Stock;
             var stockPoints = new PointCollection();
             for (int i = 0; i <= StockProfile.Resolution; i++)
                 stockPoints.Add(new Point(PxX(stock.SampleZ(i)), PxY(stock.OuterX[i])));
@@ -1611,52 +1706,48 @@ namespace FanucSimulator
             };
             LatheCanvas.Children.Add(zeroLine);
 
-            // Tool path - each move contributes an independent (from, to) pair, stepping by 2 so we
-            // don't draw a spurious seam line between one move's end and the next move's start (their
-            // rendered positions can differ slightly when cutter comp direction changes between moves).
-            for (int i = 0; i < _sim.ToolPath.Count - 1; i += 2)
-            {
-                var p1 = _sim.ToolPath[i];
-                var p2 = _sim.ToolPath[i + 1];
-                var stroke = p1.Type switch
-                {
-                    "rapid" => Brushes.DeepSkyBlue,
-                    "collision" => Brushes.Red, // not produced yet - reserved for the future tool-library collision check
-                    _ => Brushes.LimeGreen
-                };
+            // Tool path, one Path per colour. Each move is its own (from, to) pair, so no seam is drawn
+            // between one move's end and the next move's start (their rendered positions can differ
+            // slightly when cutter comp direction changes between moves). A single geometry per colour
+            // rather than one Line element per segment: playback redraws this every frame, and a long
+            // program has thousands of segments.
+            AddSegmentPath(view.Segments, "rapid", Brushes.DeepSkyBlue, PxX, PxY);
+            AddSegmentPath(view.Segments, "feed", Brushes.LimeGreen, PxX, PxY);
+            AddSegmentPath(view.Segments, "collision", Brushes.Red, PxX, PxY);
 
-                var line = new Line
+            // Playback held just before a collision: show the rapid that was about to happen, dashed,
+            // so the operator can see exactly what the program would have done.
+            if (view.PendingCollision is { } crash)
+            {
+                LatheCanvas.Children.Add(new Line
                 {
-                    X1 = PxX(p1.Z),
-                    Y1 = PxY(p1.X),
-                    X2 = PxX(p2.Z),
-                    Y2 = PxY(p2.X),
-                    Stroke = stroke,
-                    StrokeThickness = 1.5
-                };
-                LatheCanvas.Children.Add(line);
+                    X1 = PxX(crash.Z1), Y1 = PxY(crash.X1), X2 = PxX(crash.Z2), Y2 = PxY(crash.X2),
+                    Stroke = Brushes.Red,
+                    StrokeThickness = 2,
+                    StrokeDashArray = new DoubleCollection { 4, 3 },
+                });
             }
 
-            // Current position
+            // Current position - drawn where the tool actually is (offsets and comp included), which
+            // is where the toolpath ends. The label reads the programmed position, like the POS screen.
             var tool = new Ellipse
             {
                 Width = 8,
                 Height = 8,
                 Fill = Brushes.Lime
             };
-            Canvas.SetLeft(tool, PxX(_sim.Z) - 4);
-            Canvas.SetTop(tool, PxY(_sim.X) - 4);
+            Canvas.SetLeft(tool, PxX(view.ToolRender.Z) - 4);
+            Canvas.SetTop(tool, PxY(view.ToolRender.X) - 4);
             LatheCanvas.Children.Add(tool);
 
-            // Position label
             var label = new TextBlock
             {
-                Text = $"X:{_sim.X:F1} Z:{_sim.Z:F1}",
+                Text = $"X:{FormatPos(view.ToolProgrammed.X)} Z:{FormatPos(view.ToolProgrammed.Z)}",
                 Foreground = Brushes.Lime,
                 FontSize = 10
             };
-            Canvas.SetLeft(label, PxX(_sim.Z) + 10);
-            Canvas.SetTop(label, PxY(_sim.X) - 20);
+            Canvas.SetLeft(label, PxX(view.ToolRender.Z) + 10);
+            Canvas.SetTop(label, PxY(view.ToolRender.X) - 20);
             LatheCanvas.Children.Add(label);
 
             ZoomLabel.Text = $"{_canvasZoom * 100:F0}%";

@@ -95,9 +95,10 @@ namespace FanucSimulator
 
         private MachineStateSnapshot CaptureState() => new(
             SpindleSpeed, SpindleDir, CoolantOn, CurrentTool, FeedRate,
-            Modal.Units == UnitsMode.Inch, Modal.Feed == FeedMode.PerRevolution);
+            Modal.Units == UnitsMode.Inch, Modal.Feed == FeedMode.PerRevolution,
+            Modal.Motion, Modal.Comp, Modal.ActiveWorkOffset, Modal.Spindle == SpindleMode.ConstantSurfaceSpeed);
 
-        private void RecordMarker(int line)
+        private void RecordMarker(int line, int sequenceNumber = -1)
         {
             if (_timeline == null)
                 return;
@@ -106,6 +107,7 @@ namespace FanucSimulator
                 Seq = _timeline.NextSeq(),
                 Time = _timeline.Duration,
                 Line = line,
+                SequenceNumber = sequenceNumber,
                 MessageCount = Messages.Count,
                 WarningCount = Warnings.Count,
                 AlarmCount = Alarms.Count,
@@ -130,6 +132,9 @@ namespace FanucSimulator
                 FromX = X, FromZ = Z, ToX = X, ToZ = Z,
                 Line = _currentLine,
                 State = CaptureState(),
+                MessagesBefore = Messages.Count,
+                WarningsBefore = Warnings.Count,
+                AlarmsBefore = Alarms.Count,
             });
             _timeline.Duration += seconds;
         }
@@ -284,7 +289,7 @@ namespace FanucSimulator
                 // Everything this block records - motion, dwell, log lines - is attributed to its line,
                 // which is what lets playback highlight the block that is actually running.
                 _currentLine = block.Line;
-                RecordMarker(block.Line);
+                RecordMarker(block.Line, block.Params.TryGetValue("N", out var n) ? (int)n : -1);
 
                 // Block delete applies at every level, not just the top - a '/' line inside a
                 // subprogram is skipped by the same switch.
@@ -1162,6 +1167,10 @@ namespace FanucSimulator
 
         private void MoveTo(double targetX, double targetZ, bool rapid)
         {
+            // Before anything this move itself logs (a collision warning, say), so playback shows
+            // that warning when the move is reached rather than one move early.
+            var (messagesBefore, warningsBefore, alarmsBefore) = (Messages.Count, Warnings.Count, Alarms.Count);
+
             var offset = Offsets.GetOrCreateTool(_activeOffsetNumber);
 
             var dx = targetX - X;
@@ -1301,6 +1310,9 @@ namespace FanucSimulator
                     CarveZ1 = carveZ1, CarveX1 = carveX1, CarveZ2 = carveZ2, CarveX2 = carveX2,
                     Line = _currentLine,
                     State = CaptureState(),
+                    MessagesBefore = messagesBefore,
+                    WarningsBefore = warningsBefore,
+                    AlarmsBefore = alarmsBefore,
                 };
                 _timeline.Events.Add(ev);
                 _timeline.Duration += seconds;

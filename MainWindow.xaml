@@ -186,6 +186,34 @@
                         <Button Content="Reset View" Click="ResetCanvasView_Click" Style="{StaticResource PanelButton}" Padding="6,2" FontSize="11"/>
                         <Button Content="3D View..." Click="Open3DView_Click" Style="{StaticResource PanelButton}" Padding="6,2" FontSize="11" Margin="6,0,0,0"/>
                     </StackPanel>
+
+                    <!-- Simulator playback controls. Deliberately here by the canvas and NOT on the
+                         operator panel: these are conveniences of a simulator (how fast to show the
+                         cut, whether to show it at all), not controls the machine has. Pause/resume is
+                         the same hold as the panel's FEED HOLD / CYCLE START, repeated here because the
+                         panel can be scrolled out of view. -->
+                    <Border HorizontalAlignment="Left" VerticalAlignment="Top" Margin="8,8,0,0" Padding="6,3"
+                            Background="#161616" BorderBrush="#333" BorderThickness="1">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="SIM" Foreground="{StaticResource MutedText}" FontSize="10" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <CheckBox x:Name="AnimateToggle" Content="Animate" IsChecked="True" Foreground="{StaticResource MutedText}" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"
+                                      ToolTip="Play each run back at machine speed. Off runs instantly, as before."/>
+                            <ComboBox x:Name="PlaybackSpeedCombo" Width="62" FontSize="11" VerticalAlignment="Center" SelectedIndex="0" SelectionChanged="PlaybackSpeed_Changed"
+                                      ToolTip="Playback speed. 1x is real machine time.">
+                                <ComboBoxItem Content="1x" Tag="1"/>
+                                <ComboBoxItem Content="2x" Tag="2"/>
+                                <ComboBoxItem Content="5x" Tag="5"/>
+                                <ComboBoxItem Content="10x" Tag="10"/>
+                                <ComboBoxItem Content="25x" Tag="25"/>
+                                <ComboBoxItem Content="100x" Tag="100"/>
+                            </ComboBox>
+                            <Button x:Name="PlaybackPauseButton" Content="Pause" Click="PlaybackPause_Click" Style="{StaticResource PanelButton}" Padding="6,2" FontSize="11" Margin="6,0,0,0" IsEnabled="False"/>
+                            <Button x:Name="PlaybackSkipButton" Content="Skip to end" Click="PlaybackSkip_Click" Style="{StaticResource PanelButton}" Padding="6,2" FontSize="11" IsEnabled="False"/>
+                            <CheckBox x:Name="StopOnCollisionToggle" Content="Stop on collision" IsChecked="True" Foreground="{StaticResource MutedText}" FontSize="11" VerticalAlignment="Center" Margin="4,0,0,0"
+                                      ToolTip="Hold playback just before a rapid that would hit the part, and show the move it was about to make."/>
+                            <TextBlock x:Name="PlaybackStatusText" Text="" Foreground="#e8c000" FontSize="11" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                        </StackPanel>
+                    </Border>
                 </Grid>
             </Border>
 
@@ -871,12 +899,12 @@
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                         <Button Content="&#9679;" Click="Execute_Click" Background="#004400" Foreground="#29d629"
                                 Width="40" Height="40" FontSize="20" Margin="0,0,6,0" ToolTip="CYCLE START"/>
-                        <!-- FEED HOLD stops motion mid-block on a real control. This engine executes a
-                             block atomically (there is no mid-block pause point), so honouring the
-                             press would either do nothing while claiming to, or silently act as RESET,
-                             which FEED HOLD is not. Left inert rather than either. -->
-                        <Button Content="&#9679;" IsEnabled="False" Background="#440000" Foreground="#803030"
-                                Width="40" Height="40" FontSize="20" ToolTip="FEED HOLD (not modeled - blocks run atomically)"/>
+                        <!-- FEED HOLD stops motion mid-move; CYCLE START continues it. It was inert while
+                             every run finished instantly - there was no mid-move point to hold at. Now
+                             that runs play back at machine speed, it holds the playback exactly where the
+                             tool is. It is not RESET: the run continues from the same point. -->
+                        <Button x:Name="FeedHoldButton" Content="&#9679;" Click="FeedHold_Click" Background="#660000" Foreground="#ff5050"
+                                Width="40" Height="40" FontSize="20" ToolTip="FEED HOLD - stop motion; CYCLE START continues"/>
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,2,0,0">
                         <TextBlock Text="CYCLE START" Foreground="{StaticResource MutedText}" FontSize="7" Width="46" TextAlignment="Center" TextWrapping="Wrap"/>

@@ -45,6 +45,14 @@ runs real conditionals and loops, not just token substitution.
 - **A carved stock model**: the workpiece is a sampled profile that actually loses material as the
   program runs (turning, facing, boring, drilling, grooving, threading all modify it), not a static
   outline with a toolpath drawn over it.
+- **Watch it cut**: each run plays back at real machine speed (or 2x-100x), with the tool moving,
+  material coming off as it goes, and the console log keeping pace with the cut. While it plays, the
+  POS screen behaves like the machine's: the counters move, DISTANCE TO GO counts down the current
+  move, and the executing block is highlighted in the program pane with its N-number shown. FEED
+  HOLD stops motion where it is and CYCLE START continues; with "Stop on collision" on, playback
+  halts just before a rapid that would hit the part and shows the move it was about to make. Under
+  the hood the engine still runs each program instantly and records a timeline of what it did; the
+  replay is checked in the test suite to reproduce the engine's part exactly.
 - **Realistic cycle-time simulation**: RUN TIME/CYCLE TIME on the POS ALL screen are computed from
   actual commanded physics (feed rate + distance, true arc length for G02/G03, G04 dwell duration,
   the machine's real 500 in/min rapid) as the program runs, not wall-clock time - a program that would take two
@@ -108,7 +116,7 @@ A few worth starting with:
 ## Testing
 
 `EngineTest/` is a headless console harness (source-linked against the same engine files, no test
-framework dependency) with 312 hand-rolled assertions covering every documented G/M-code, both
+framework dependency) with 321 hand-rolled assertions covering every documented G/M-code, both
 canned-cycle directions, macro control flow, geometry checks against several of the demo programs
 above, the catalog-persistence round-trip, and exact closed-form cycle-time checks. Runs
 automatically on every push via GitHub Actions (see the badge at the top of this file).

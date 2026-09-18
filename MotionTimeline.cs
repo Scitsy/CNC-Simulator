@@ -11,7 +11,8 @@ namespace FanucSimulator
     // The machine state the screen shows alongside motion. Captured whenever something is recorded,
     // so playback can show what was true at that moment rather than what is true at the end.
     public readonly record struct MachineStateSnapshot(
-        double SpindleRpm, int SpindleDir, bool CoolantOn, int Tool, double FeedRate, bool Inch, bool FeedPerRev);
+        double SpindleRpm, int SpindleDir, bool CoolantOn, int Tool, double FeedRate, bool Inch, bool FeedPerRev,
+        MotionMode Motion, CutterComp Comp, int WorkOffset, bool Css);
 
     public sealed class TimelineEvent
     {
@@ -46,6 +47,13 @@ namespace FanucSimulator
 
         public int Line { get; init; }
         public MachineStateSnapshot State { get; init; }
+
+        // How much of the log existed just before this move began. Canned cycles log pass by pass
+        // inside one block, so revealing the log by block alone ran a whole G71 ahead of the tool;
+        // tying it to moves keeps it at most one move ahead.
+        public int MessagesBefore { get; init; }
+        public int WarningsBefore { get; init; }
+        public int AlarmsBefore { get; init; }
     }
 
     // Recorded before each block runs. Carries the log counts at that instant so playback can reveal
@@ -55,6 +63,11 @@ namespace FanucSimulator
         public int Seq { get; init; }
         public double Time { get; init; }
         public int Line { get; init; } // 0 for the closing marker recorded when the run stops
+
+        // The block's N word, or -1 if it has none. Blocks that carry only an N take no time, so the
+        // UI would almost never catch them as "the running line" - recording it here lets playback
+        // show the last N-number reached, the way the control does.
+        public int SequenceNumber { get; init; } = -1;
         public int MessageCount { get; init; }
         public int WarningCount { get; init; }
         public int AlarmCount { get; init; }
