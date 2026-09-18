@@ -680,8 +680,9 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
     var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
     Console.WriteLine("[35] G41/G42/G40 cutter nose radius compensation");
     Check("no alarms", alarms.Count == 0);
-    Check("G41-active section (Z-5) offset OUTWARD by the 0.4mm nose radius: ~X30.4",
-        Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -5)] - 30.4) < 0.05);
+    // 0.4mm per side is 0.8mm on the diameter.
+    Check("G41-active section (Z-5) offset OUTWARD by the 0.4mm nose radius: ~X30.8",
+        Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -5)] - 30.8) < 0.05);
     Check("G40-cancelled section (Z-15) back to the exact programmed X30 (uncompensated)",
         Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -15)] - 30.0) < 0.05);
 
@@ -689,8 +690,8 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
     var sim2 = new LatheSimulator();
     var program2 = "G21\nT0101\nG00 X50 Z2\nG42\nG01 X30 Z2 F0.1\nG01 Z-10 F0.1\nM30\n";
     RunFull(sim2, new GCodeParser().Parse(program2), out _);
-    Check("G42 offset INWARD by the same 0.4mm nose radius: ~X29.6",
-        Math.Abs(sim2.Stock.OuterX[NearestIndex(sim2.Stock, -5)] - 29.6) < 0.05);
+    Check("G42 offset INWARD by the same 0.4mm nose radius: ~X29.2",
+        Math.Abs(sim2.Stock.OuterX[NearestIndex(sim2.Stock, -5)] - 29.2) < 0.05);
 }
 
 // 36. Work offset G54-G59: Modal.ActiveWorkOffset was tracked but never actually consulted when
@@ -892,9 +893,27 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
     Check("#4001 == 2 after the G02 fillet", Math.Abs((sim.GetCommonVariableRows().Find(r => r.Variable == "#112")?.Value ?? -1) - 2) < 0.01);
     Check("#4001 == 3 after the G03 fillet", Math.Abs((sim.GetCommonVariableRows().Find(r => r.Variable == "#113")?.Value ?? -1) - 3) < 0.01);
 
-    Check("OD profile: step-down diameter ~30mm at Z-15", Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -15)] - 30) < 0.5);
-    Check("OD profile: convex fillet returns to ~40mm at Z-25", Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -25)] - 40) < 0.5);
-    Check("OD profile: concave fillet back to ~30mm at Z-50", Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -50)] - 30) < 0.5);
+    Check("OD profile: step-down diameter ~30mm at Z-10", Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -10)] - 30) < 0.5);
+    // Inside each R5 arc, the shape tells concave from convex (the two differ by 6-7mm here, well
+    // beyond the 0.5 allowed: carving can overcut a steep chord by up to one stock sample's spacing).
+    // Each is compared at the stock sample
+    // nearest the named Z, using that sample's own Z (samples don't land on round numbers).
+    // G02 fillet, center X40 (radius 20) Z-15: near Z-18 the radius is 20 - sqrt(25 - dz^2), about
+    // X32 (the convex arc would be about X39).
+    var iFillet = NearestIndex(sim.Stock, -18);
+    var filletDz = sim.Stock.SampleZ(iFillet) - (-15);
+    var filletX = 2 * (20 - Math.Sqrt(25 - filletDz * filletDz));
+    Check($"OD profile: G02 is the concave fillet (X{filletX:F2} at Z{sim.Stock.SampleZ(iFillet):F2})",
+        Math.Abs(sim.Stock.OuterX[iFillet] - filletX) < 0.5);
+    Check("OD profile: shoulder diameter ~44mm at Z-28", Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -28)] - 44) < 0.5);
+    // G03 rounded edge, center X34 (radius 17) Z-35: near Z-38 the radius is 17 + sqrt(25 - dz^2),
+    // about X42 (the concave arc would be about X36).
+    var iEdge = NearestIndex(sim.Stock, -38);
+    var edgeDz = sim.Stock.SampleZ(iEdge) - (-35);
+    var edgeX = 2 * (17 + Math.Sqrt(25 - edgeDz * edgeDz));
+    Check($"OD profile: G03 is the convex rounded edge (X{edgeX:F2} at Z{sim.Stock.SampleZ(iEdge):F2})",
+        Math.Abs(sim.Stock.OuterX[iEdge] - edgeX) < 0.5);
+    Check("OD profile: back to ~30mm at Z-50", Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -50)] - 30) < 0.5);
 }
 
 // 49. Custom tool catalog entries round-trip through SaveCustomEntries/LoadCustomEntries - the
@@ -991,12 +1010,13 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
 // back to chord-summed distance.
 {
     var sim = new LatheSimulator();
-    // G00 X20 Z0: rapid 20mm @ 12700mm/min (500 in/min) = 0.09449s.
-    // G02 X30 Z-10 I0 K-10: quarter circle, center (20,-10), radius 10, sweep 90deg (pi/2 rad) ->
-    // arc length 10*pi/2 = 15.70796...mm @ 100mm/min (G98) = 9.42478...s.
-    var program = "G21\nG98\nT0101\nG00 X20 Z0\nG02 X30 Z-10 I0 K-10 F100\nM30\n";
+    // G00 X20 Z0 from X0: X20 is a diameter, so the tool travels 10mm @ 12700mm/min (500 in/min).
+    // G03 X40 Z-10 I0 K-10: quarter circle - in radius terms from (10,0) about center (10,-10) to
+    // (20,-10), radius 10, sweep 90deg -> arc length 10*pi/2 = 15.70796...mm @ 100mm/min (G98).
+    // Counter-clockwise on the drawing (Z right, X up) - so G03, not G02.
+    var program = "G21\nG98\nT0101\nG00 X20 Z0\nG03 X40 Z-10 I0 K-10 F100\nM30\n";
     var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
-    var expected = 20.0 / (500 * 25.4) * 60 + (10.0 * Math.PI / 2) / 100 * 60;
+    var expected = 10.0 / (500 * 25.4) * 60 + (10.0 * Math.PI / 2) / 100 * 60;
     Console.WriteLine("[54] G02 arc time from true arc length (radius * sweep), not chord distance");
     Check("no alarms", alarms.Count == 0);
     Check($"{expected:F5}s (rapid approach + true arc length @ 100mm/min)",
@@ -1449,8 +1469,9 @@ Console.WriteLine();
     var tl = sim.LastTimeline!;
     var cut = tl.Events.Single(e => e.Kind == TimelineEventKind.Feed);
     Check("the feed move takes 31.2s (52mm @ 100mm/min)", Math.Abs(cut.Duration - 31.2) < 1e-9);
-    Check("the rapid before it takes 50.04mm @ 500in/min",
-        Math.Abs(cut.StartTime - Math.Sqrt(50 * 50 + 2 * 2) / (500 * 25.4) * 60) < 1e-9);
+    // X0 -> X50 is 25mm of travel, the longer axis (Z moves 2), so that axis sets the time.
+    Check("the rapid before it takes 25mm (the longer axis) @ 500in/min",
+        Math.Abs(cut.StartTime - 25.0 / (500 * 25.4) * 60) < 1e-9);
 
     var cursor = new PlaybackCursor(tl);
     cursor.Seek(cut.StartTime + cut.Duration / 2);
@@ -1476,7 +1497,8 @@ Console.WriteLine();
 {
     Console.WriteLine("[80] Arc chords share the arc's exact time; dwells are timed events");
     var sim = new LatheSimulator();
-    sim.RunProgram(new GCodeParser().Parse("G21\nG98\nT0101\nG00 X20 Z0\nG02 X30 Z-10 I0 K-10 F100\nG04 P1500\nM30\n"));
+    // A true quarter circle in radius terms: (10,0) about (10,-10) to (20,-10), counter-clockwise.
+    sim.RunProgram(new GCodeParser().Parse("G21\nG98\nT0101\nG00 X20 Z0\nG03 X40 Z-10 I0 K-10 F100\nG04 P1500\nM30\n"));
     var tl = sim.LastTimeline!;
     var arcTime = tl.Events.Where(e => e.Line == 5).Sum(e => e.Duration);
     Check("the arc's chords add up to radius x sweep at F100", Math.Abs(arcTime - (10.0 * Math.PI / 2) / 100 * 60) < 1e-9);
@@ -1596,6 +1618,79 @@ Console.WriteLine();
     var secondCut = tl.Events.First(e => e.Line == 6);
     cursor.Seek(secondCut.StartTime + secondCut.Duration / 2);
     Check("during the second cut, N30 is the last N reached", cursor.SequenceNumber == 30);
+}
+
+// ---- [85] X is a diameter: geometry and timing happen in radius terms ----
+{
+    Console.WriteLine("[85] X is a diameter - arcs, timing and G71 steps work in radius terms");
+    const double RapidMmPerMin = 500 * 25.4;
+
+    // Every arc point, in radius terms, is `radius` from the center (given with X as a diameter).
+    bool OnCircle(LatheSimulator s, double centerXDia, double centerZ, double radius, int fromIndex) =>
+        s.ToolPath.Skip(fromIndex).All(p =>
+            Math.Abs(Math.Sqrt(Math.Pow((p.X - centerXDia) / 2, 2) + Math.Pow(p.Z - centerZ, 2)) - radius) < 1e-6);
+
+    // The textbook quarter fillet: 10mm up the shoulder in radius (20mm on the diameter), 10mm along
+    // Z, R10. A diameter-space engine rejected it as "radius too small" (ALARM 38).
+    var fillet = new LatheSimulator();
+    var filletAlarms = RunFull(fillet, new GCodeParser().Parse(
+        "G21\nG98\nT0101\nG00 X20 Z2\nG01 Z-10 F100\nG02 X40 Z-20 R10\nM30\n"), out _);
+    Check("a standard R10 quarter fillet (X20 Z-10 -> X40 Z-20) runs without alarm", filletAlarms.Count == 0);
+    var filletStart = fillet.ToolPath.FindLastIndex(p => Math.Abs(p.Z - (-10)) < 1e-9 && Math.Abs(p.X - 20) < 1e-9);
+    // Going up a shoulder, G02 is the concave fillet: its center is out in the open corner, at X40
+    // (radius 20) Z-10, not inside the material at X20 Z-20.
+    Check("its points form a true R10 concave fillet about X40 Z-10",
+        filletStart >= 0 && OnCircle(fillet, 40, -10, 10, filletStart));
+
+    // The textbook direction check (helmancnc's radius-dimensioning example): from the face, G03
+    // turns the convex corner and G02 the concave fillet at the next shoulder. The engine once
+    // measured arc angles from X toward Z, which swapped the two.
+    var textbook = new LatheSimulator { StockDiameter = 80, StockLength = 120 };
+    textbook.ResetStockProfile();
+    var textbookAlarms = RunFull(textbook, new GCodeParser().Parse(
+        "G21\nG98\nT0101\nG00 X0 Z2\nG01 Z0 F100\nG01 X30\nG03 X50 Z-10 R10\nG01 Z-40\nG02 X70 Z-50 R10\nG01 Z-100\nM30\n"), out _);
+    var cornerStart = textbook.ToolPath.FindLastIndex(p => Math.Abs(p.Z) < 1e-9 && Math.Abs(p.X - 30) < 1e-9);
+    var cornerEnd = textbook.ToolPath.FindIndex(p => Math.Abs(p.Z - (-10)) < 1e-9 && Math.Abs(p.X - 50) < 1e-9);
+    var filletFrom = textbook.ToolPath.FindLastIndex(p => Math.Abs(p.Z - (-40)) < 1e-9 && Math.Abs(p.X - 50) < 1e-9);
+    var filletTo = textbook.ToolPath.FindIndex(p => Math.Abs(p.Z - (-50)) < 1e-9 && Math.Abs(p.X - 70) < 1e-9);
+    bool ArcOn(int from, int to, double cx, double cz) =>
+        from >= 0 && to > from && textbook.ToolPath.Skip(from).Take(to - from + 1).All(p =>
+            Math.Abs(Math.Sqrt(Math.Pow((p.X - cx) / 2, 2) + Math.Pow(p.Z - cz, 2)) - 10) < 1e-6);
+    Check("textbook G03 X50 Z-10 R10 from X30 Z0 is the convex corner (center X30 Z-10)",
+        textbookAlarms.Count == 0 && ArcOn(cornerStart, cornerEnd, 30, -10));
+    Check("textbook G02 X70 Z-50 R10 from X50 Z-40 is the concave fillet (center X70 Z-40)",
+        ArcOn(filletFrom, filletTo, 70, -40));
+
+    // I is a radius value: I10 from X20 puts the center at X40 (diameter), 10mm out from the tool.
+    var ik = new LatheSimulator();
+    var ikAlarms = RunFull(ik, new GCodeParser().Parse(
+        "G21\nG98\nT0101\nG00 X20 Z0\nG02 X40 Z-10 I10 K0 F100\nM30\n"), out _);
+    var ikStart = ik.ToolPath.FindLastIndex(p => Math.Abs(p.Z) < 1e-9 && Math.Abs(p.X - 20) < 1e-9);
+    Check("I is a radius: G02 X40 Z-10 I10 K0 from X20 Z0 is a true R10 arc about X40 Z0",
+        ikAlarms.Count == 0 && ikStart >= 0 && OnCircle(ik, 40, 0, 10, ikStart));
+    Check("that arc takes its true length (10 * pi/2 @ 100mm/min) after a 10mm rapid",
+        Math.Abs(ik.SimulatedSecondsElapsed - (10.0 / RapidMmPerMin * 60 + 10 * Math.PI / 2 / 100 * 60)) < 1e-6);
+
+    // A feed across 20mm of diameter moves the tool 10mm.
+    var face = new LatheSimulator();
+    RunFull(face, new GCodeParser().Parse("G21\nG98\nT0101\nG01 X20 F600\nM30\n"), out _);
+    Check("G01 X0 -> X20 @ F600 mm/min takes 1.0s (10mm of real travel)",
+        Math.Abs(face.SimulatedSecondsElapsed - 1.0) < 1e-9);
+
+    // A rapid takes as long as its longer axis needs - each axis runs at its own rapid rate.
+    var diag = new LatheSimulator();
+    RunFull(diag, new GCodeParser().Parse("G21\nT0101\nG00 X20 Z-30\nM30\n"), out _);
+    Check("G00 X0 Z0 -> X20 Z-30 takes as long as the 30mm Z travel",
+        Math.Abs(diag.SimulatedSecondsElapsed - 30.0 / RapidMmPerMin * 60) < 1e-9);
+
+    // G71 U2 is 2mm per side: 4mm off the diameter each pass. From X52 to X30 is 22mm of diameter,
+    // so 6 passes (5 full + a last partial), not the 11 a diameter-space step took.
+    var g71 = new LatheSimulator { StockDiameter = 50, StockLength = 40 };
+    g71.ResetStockProfile();
+    RunFull(g71, new GCodeParser().Parse(
+        "G21\nG99\nT0101\nM03 S1000\nG00 X52 Z2\nG71 U2 R0.5\nG71 P10 Q20 U0 W0 F0.2\nN10 G00 X30\nN20 G01 Z-20\nM30\n"), out _);
+    Check("G71 U2 steps 4mm on the diameter: X52 -> X30 in 6 passes",
+        g71.Messages.Any(m => m.Contains("Roughing complete, 6 passes")));
 }
 
 Console.WriteLine($"===== TOTAL: {pass} passed, {fail} failed =====");

@@ -1021,10 +1021,11 @@ namespace FanucSimulator
 
             if (block.Params.ContainsKey("I") || block.Params.ContainsKey("K"))
             {
-                // I/K are incremental offsets from the arc's start point to its center.
+                // I/K are incremental offsets from the arc's start point to its center. I is always a
+                // radius value, even with X in diameter, so it counts double against X.
                 var i = block.Params.TryGetValue("I", out var iv) ? ToMm(iv) : 0;
                 var k = block.Params.TryGetValue("K", out var kv) ? ToMm(kv) : 0;
-                centerX = X + i;
+                centerX = X + 2 * i;
                 centerZ = Z + k;
             }
             else if (block.Params.TryGetValue("R", out var rParam))
@@ -1052,9 +1053,11 @@ namespace FanucSimulator
             // line distance - close enough to be a near-exact approximation, but "close" isn't
             // "exact", and exact is easy here since the data's already local. Suppress MoveTo's own
             // per-chord time accumulation during tessellation so the two don't double-count.
-            var arcRadius = Math.Sqrt(Math.Pow(X - centerX, 2) + Math.Pow(Z - centerZ, 2));
-            var startAngle = Math.Atan2(Z - centerZ, X - centerX);
-            var endAngle = Math.Atan2(targetZ - centerZ, targetX - centerX);
+            // In radius terms - the arc is a true circle only there - and with angles measured the way
+            // ComputeArcPoints measures them, so clockwise means the same thing in both.
+            var arcRadius = Math.Sqrt(Math.Pow((X - centerX) / 2, 2) + Math.Pow(Z - centerZ, 2));
+            var startAngle = ArcAngle((X - centerX) / 2, Z - centerZ);
+            var endAngle = ArcAngle((targetX - centerX) / 2, targetZ - centerZ);
             var arcSweep = clockwise ? startAngle - endAngle : endAngle - startAngle;
             while (arcSweep < 0) arcSweep += 2 * Math.PI;
             if (arcSweep < 1e-9) arcSweep = 2 * Math.PI;
@@ -1082,7 +1085,15 @@ namespace FanucSimulator
         // Standard two-circle-intersection: both candidate centers are equidistant (r) from both
         // endpoints; the R-sign convention picks between them (positive R = minor arc <=180deg,
         // negative R = major arc >180deg).
-        private static (double X, double Z)? ComputeArcCenterFromRadius(double x1, double z1, double x2, double z2, double r, bool clockwise)
+        // Takes and returns X as a diameter, like the rest of the engine, but solves in radius terms:
+        // R is a radius of the real circle the tool follows, which is only a circle there.
+        private static (double X, double Z)? ComputeArcCenterFromRadius(double x1Dia, double z1, double x2Dia, double z2, double r, bool clockwise)
+        {
+            var center = ComputeArcCenterInRadiusSpace(x1Dia / 2, z1, x2Dia / 2, z2, r, clockwise);
+            return center.HasValue ? (center.Value.X * 2, center.Value.Z) : null;
+        }
+
+        private static (double X, double Z)? ComputeArcCenterInRadiusSpace(double x1, double z1, double x2, double z2, double r, bool clockwise)
         {
             var dx = x2 - x1;
             var dz = z2 - z1;
@@ -1105,8 +1116,8 @@ namespace FanucSimulator
 
             bool IsMajorArc(double cx, double cz)
             {
-                var a1 = Math.Atan2(z1 - cz, x1 - cx);
-                var a2 = Math.Atan2(z2 - cz, x2 - cx);
+                var a1 = ArcAngle(x1 - cx, z1 - cz);
+                var a2 = ArcAngle(x2 - cx, z2 - cz);
                 var sweep = clockwise ? a1 - a2 : a2 - a1;
                 while (sweep < 0) sweep += 2 * Math.PI;
                 return sweep > Math.PI;
@@ -1127,19 +1138,32 @@ namespace FanucSimulator
             }
         }
 
+        // Angle of a point about an arc's center, in radius terms, measured from +Z toward +X: the
+        // usual counter-clockwise angle on a lathe drawing (Z to the right, X up), which is the view
+        // G02 (clockwise) and G03 (counter-clockwise) are defined in - so a convex corner turned from
+        // the face toward the chuck is a G03, the textbook case. Measuring from +X toward +Z instead,
+        // as this engine once did, silently swapped the two.
+        private static double ArcAngle(double radial, double axial) => Math.Atan2(radial, axial);
+
         // Pure point generation for an arc, shared by TessellateArc (real motion) and
         // ExtractContour (dry-run canned-cycle contour capture, so arcs embedded in a G71/G72/G70
         // profile get walked as the actual curve rather than degrading to a straight chord).
+        // X in and out is a diameter; the circle itself is walked in radius terms, since that is the
+        // only space it is a circle in (in diameter terms it would be an ellipse twice as tall).
         private static List<(double X, double Z)> ComputeArcPoints(double startX, double startZ, double endX, double endZ, double centerX, double centerZ, bool clockwise)
         {
             var points = new List<(double X, double Z)>();
 
-            var radius = Math.Sqrt(Math.Pow(startX - centerX, 2) + Math.Pow(startZ - centerZ, 2));
+            var startR = startX / 2;
+            var endR = endX / 2;
+            var centerR = centerX / 2;
+
+            var radius = Math.Sqrt(Math.Pow(startR - centerR, 2) + Math.Pow(startZ - centerZ, 2));
             if (radius < 1e-6)
                 return points;
 
-            var startAngle = Math.Atan2(startZ - centerZ, startX - centerX);
-            var endAngle = Math.Atan2(endZ - centerZ, endX - centerX);
+            var startAngle = ArcAngle(startR - centerR, startZ - centerZ);
+            var endAngle = ArcAngle(endR - centerR, endZ - centerZ);
 
             var sweep = clockwise ? startAngle - endAngle : endAngle - startAngle;
             while (sweep < 0) sweep += 2 * Math.PI;
@@ -1158,7 +1182,7 @@ namespace FanucSimulator
                 else
                 {
                     currentAngle += angleStep;
-                    points.Add((centerX + radius * Math.Cos(currentAngle), centerZ + radius * Math.Sin(currentAngle)));
+                    points.Add((2 * (centerR + radius * Math.Sin(currentAngle)), centerZ + radius * Math.Cos(currentAngle)));
                 }
             }
 
@@ -1173,12 +1197,19 @@ namespace FanucSimulator
 
             var offset = Offsets.GetOrCreateTool(_activeOffsetNumber);
 
-            var dx = targetX - X;
+            // X is a diameter, but the tool only travels half of any change in it. Lengths, directions
+            // and the comp offset below are all worked out in radius terms, the space the tool really
+            // moves in; doing them on the diameter doubled X travel and skewed every angle.
+            var drx = (targetX - X) / 2;
             var dz = targetZ - Z;
-            var len = Math.Sqrt(dx * dx + dz * dz);
+            var len = Math.Sqrt(drx * drx + dz * dz);
             var hasDirection = len > 1e-6;
-            AddMoveTime(len, rapid);
-            var ndx = hasDirection ? dx / len : 0;
+
+            // A feed runs at F along the path. A rapid runs each axis at up to its own rapid rate, so
+            // it takes as long as the longer axis needs - true for straight and dogleg rapids alike.
+            var travel = rapid ? Math.Max(Math.Abs(drx), Math.Abs(dz)) : len;
+            AddMoveTime(travel, rapid);
+            var ndx = hasDirection ? drx / len : 0;
             var ndz = hasDirection ? dz / len : 0;
 
             // True vector comp: offset perpendicular to this segment's own direction of travel,
@@ -1186,7 +1217,8 @@ namespace FanucSimulator
             // Assumes a front tool post; doesn't model the 9 imaginary tool-nose-direction vectors
             // real controls use for rear-mounted or unusual tool orientations.
             var compActive = Modal.Comp != CutterComp.Off && offset.NoseRadius != 0 && hasDirection;
-            var (compDx, compDz) = compActive ? ComputeCompOffset(ndx, ndz, offset.NoseRadius, Modal.Comp) : (0, 0);
+            var (compRx, compDz) = compActive ? ComputeCompOffset(ndx, ndz, offset.NoseRadius, Modal.Comp) : (0, 0);
+            var compDx = compRx * 2; // back to a diameter, like everything else in X
 
             // X/Z (and the target passed in) are work coordinates in the currently active work
             // offset's frame - the stock itself sits at a fixed machine-space location, so the
@@ -1211,26 +1243,29 @@ namespace FanucSimulator
             if (compActive && !rapid && _pendingCompLine.HasValue)
             {
                 var (px, pz, pdx, pdz) = _pendingCompLine.Value;
-                var corner = IntersectLines(px, pz, pdx, pdz, fromRenderX, fromRenderZ, ndx, ndz);
+                // Intersected in radius terms, like the directions; the corner goes back to a diameter.
+                var corner = IntersectLines(px / 2, pz, pdx, pdz, fromRenderX / 2, fromRenderZ, ndx, ndz);
                 if (corner.HasValue)
                 {
-                    var spike = Math.Sqrt(Math.Pow(corner.Value.X - fromRenderX, 2) + Math.Pow(corner.Value.Z - fromRenderZ, 2));
+                    var cornerX = corner.Value.X * 2;
+                    var cornerZ = corner.Value.Z;
+                    var spike = Math.Sqrt(Math.Pow((cornerX - fromRenderX) / 2, 2) + Math.Pow(cornerZ - fromRenderZ, 2));
                     if (spike <= offset.NoseRadius * 5)
                     {
                         var lastIndex = ToolPath.Count - 1;
                         if (lastIndex >= 0)
-                            ToolPath[lastIndex] = (corner.Value.X, corner.Value.Z, ToolPath[lastIndex].Type);
+                            ToolPath[lastIndex] = (cornerX, cornerZ, ToolPath[lastIndex].Type);
 
                         // Keep the playback timeline's drawing in step with ToolPath. Only the drawn
                         // end point moves - that segment's carve already happened un-mitered.
                         if (_lastMotionEvent != null)
                         {
-                            _lastMotionEvent.ToRenderX = corner.Value.X;
-                            _lastMotionEvent.ToRenderZ = corner.Value.Z;
+                            _lastMotionEvent.ToRenderX = cornerX;
+                            _lastMotionEvent.ToRenderZ = cornerZ;
                         }
 
-                        fromRenderX = corner.Value.X;
-                        fromRenderZ = corner.Value.Z;
+                        fromRenderX = cornerX;
+                        fromRenderZ = cornerZ;
                     }
                 }
             }
@@ -1292,7 +1327,7 @@ namespace FanucSimulator
             {
                 // Inside an arc, the chords' time is provisional - ApplyArcMotion rescales them so
                 // they share the arc's exact duration, the same number the cycle-time clock gets.
-                var seconds = MoveSeconds(len, rapid);
+                var seconds = MoveSeconds(travel, rapid);
                 var ev = new TimelineEvent
                 {
                     Seq = _timeline.NextSeq(),

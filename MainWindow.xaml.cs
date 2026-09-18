@@ -1613,7 +1613,10 @@ namespace FanucSimulator
 
             var availableWidth = Math.Max(50, canvasWidth - leftMargin - rightMargin);
             var availableHeight = Math.Max(50, canvasHeight - topMargin - bottomMargin);
-            var baseScale = Math.Min(availableWidth / zExtent, availableHeight / Math.Max(1, xExtent));
+            // The canvas shows the upper half of the part's cross-section, so heights are radii (X is a
+            // diameter): at one scale for both axes the part keeps its true proportions and an arc is
+            // drawn as the circle it is. Plotting the diameter drew everything twice as tall.
+            var baseScale = Math.Min(availableWidth / zExtent, availableHeight / Math.Max(1, xExtent / 2));
             var scale = baseScale * _canvasZoom;
 
             var zOriginX = leftMargin - zMin * scale + _canvasPanX; // pixel X where Z=0 falls
@@ -1626,7 +1629,7 @@ namespace FanucSimulator
             _lastRenderZMin = zMin;
 
             double PxX(double z) => zOriginX + z * scale;
-            double PxY(double x) => xOriginY - x * scale;
+            double PxY(double x) => xOriginY - x / 2 * scale;
 
             // Grid: horizontal lines at diameter graduations, spaced to suit the part's actual size.
             var gridStep = xExtent switch { <= 30 => 5, <= 80 => 10, <= 200 => 25, _ => 50 };
@@ -1648,7 +1651,7 @@ namespace FanucSimulator
             // Stock: spans Z=-StockLength (chuck end, left) to Z0 (face). Traced from the carved
             // profile (Stock.OuterX/InnerX) rather than a fixed block, so turned/faced/bored/drilled
             // material actually disappears as the program runs instead of just being drawn over.
-            var stockPixelDiameter = _sim.StockDiameter * scale;
+            var stockPixelDiameter = _sim.StockDiameter / 2 * scale; // drawn height, i.e. the radius
             var stockLeft = PxX(-_sim.StockLength);
 
             var stock = view.Stock;

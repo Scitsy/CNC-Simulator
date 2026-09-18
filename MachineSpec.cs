@@ -34,10 +34,12 @@ namespace FanucSimulator
         // 21% slow, which never mattered much while programs ran instantly but is on screen once the
         // tool is seen moving.
         //
-        // Assumption, not yet confirmed: rapids move in a straight line (parameter 1401 bit 1, LRP,
-        // set to 1). If this control has LRP=0, each axis rapids at full speed independently and the
-        // path is a "dogleg" - which matters for proving out, since a dogleg can clip something a
-        // straight line misses.
+        // Confirmed by the owner (2026-09-18): X and Z in the same block rapid together, diagonally;
+        // an axis in the next block moves on its own after the first arrives. Still open: whether
+        // that diagonal is a straight line to the end point (parameter 1401 bit 1, LRP=1, assumed
+        // here) or a "dogleg" (LRP=0: both axes at full speed, so it runs at 45 degrees until the
+        // shorter axis arrives, then straight). That matters for proving out, since a dogleg can
+        // clip something a straight line misses.
         public const double RapidTraverseInchesPerMin = 500;
         public const double RapidTraverseMmPerMin = RapidTraverseInchesPerMin * 25.4;
 

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -516,7 +516,8 @@ namespace FanucSimulator
 
                     if (block.Params.ContainsKey("I") || block.Params.ContainsKey("K"))
                     {
-                        centerX = cursorX + (block.Params.TryGetValue("I", out var iv) ? ToMm(iv) : 0);
+                        // I is a radius value, so it counts double against diameter X (as in G02/G03).
+                        centerX = cursorX + 2 * (block.Params.TryGetValue("I", out var iv) ? ToMm(iv) : 0);
                         centerZ = cursorZ + (block.Params.TryGetValue("K", out var kv) ? ToMm(kv) : 0);
                     }
                     else if (block.Params.TryGetValue("R", out var rVal))
@@ -654,18 +655,23 @@ namespace FanucSimulator
                 return;
             }
 
-            var passCount = Math.Max(1, (int)Math.Ceiling((startPrimary - minPrimary) / _roughingDepth));
+            // G71's depth of cut and retract are per side (radius values), but its stepping axis is the
+            // diameter X, so each counts double there. G72 steps in Z, where they apply as they are.
+            var stepDepth = isFacing ? _roughingDepth : 2 * _roughingDepth;
+            var stepRetract = isFacing ? _roughingRetract : 2 * _roughingRetract;
+
+            var passCount = Math.Max(1, (int)Math.Ceiling((startPrimary - minPrimary) / stepDepth));
             var approachSecondary = genericContour[0].Secondary;
 
             // Always fully clear of the ORIGINAL stock (not just the previous pass's own depth) -
             // safe to reposition across the whole part length at this primary value regardless of
             // how many passes have run, since nothing has ever been cut wider than startPrimary.
-            var clearPrimary = startPrimary + _roughingRetract;
+            var clearPrimary = startPrimary + stepRetract;
             var currentSecondary = ToGeneric((X, Z)).Secondary;
 
             for (int pass = 1; pass <= passCount; pass++)
             {
-                var passPrimary = Math.Max(minPrimary, startPrimary - pass * _roughingDepth);
+                var passPrimary = Math.Max(minPrimary, startPrimary - pass * stepDepth);
                 var path = ClampPassPath(genericContour, passPrimary);
                 if (path.Count == 0)
                     continue;
