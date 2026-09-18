@@ -76,6 +76,21 @@ namespace FanucSimulator
             return new LatheView(_cursor.Stock, segments, tool, programmed, coolant, pending);
         }
 
+        // The 3D window draws the same moment the 2D canvas does. Framing always uses the engine's
+        // whole toolpath, which already holds the complete run, so the camera stays put as playback
+        // draws the path out.
+        private Stock3DView Current3DView()
+        {
+            var lathe = CurrentLatheView();
+            var drawn = new List<(double X, double Z, string Type)>(lathe.Segments.Count * 2);
+            foreach (var seg in lathe.Segments)
+            {
+                drawn.Add((seg.X1, seg.Z1, seg.Type));
+                drawn.Add((seg.X2, seg.Z2, seg.Type));
+            }
+            return new Stock3DView(lathe.Stock, drawn, lathe.ToolRender, _sim.ToolPath);
+        }
+
         private void AddSegmentPath(
             List<(double X1, double Z1, double X2, double Z2, string Type)> segments,
             string type, Brush stroke, Func<double, double> pxX, Func<double, double> pxY)
@@ -176,7 +191,17 @@ namespace FanucSimulator
                 _lastSlowUiUpdate = now;
                 UpdateDisplay();
             }
+
+            // The 3D view rebuilds its whole revolved mesh on every refresh, so it follows playback
+            // at about 8 Hz rather than every frame.
+            if (_stock3DWindow?.IsLoaded == true && (force || now - _last3DRefresh > 0.125))
+            {
+                _last3DRefresh = now;
+                _stock3DWindow.Refresh();
+            }
         }
+
+        private double _last3DRefresh;
 
         // 'status' is the short form for the SIM bar; 'detail', if given, is what goes in the console.
         private void HoldPlayback(string status, string? detail = null)

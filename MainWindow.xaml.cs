@@ -225,7 +225,6 @@ namespace FanucSimulator
             RefreshMacroScreen();
             if (_stock3DWindow?.IsLoaded == true)
             {
-                _stock3DWindow.UpdateSimulator(_sim); // Reset replaces _sim wholesale - follow along, don't render the discarded instance
                 _stock3DWindow.Refresh();
             }
             Log("Reset", "success");
@@ -1079,7 +1078,7 @@ namespace FanucSimulator
         private void Open3DView_Click(object sender, RoutedEventArgs e)
         {
             if (_stock3DWindow == null || !_stock3DWindow.IsLoaded)
-                _stock3DWindow = new Stock3DWindow(_sim) { Owner = this };
+                _stock3DWindow = new Stock3DWindow(Current3DView) { Owner = this };
             else
                 _stock3DWindow.Refresh(); // already open - bring it up to date with the current stock
             _stock3DWindow.Show();

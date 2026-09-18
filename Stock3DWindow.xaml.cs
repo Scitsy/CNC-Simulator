@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Input;
@@ -22,12 +22,19 @@ namespace FanucSimulator
     // revolved solid only 180 degrees instead of 360, exposing internal bores that would otherwise
     // only be visible where they happen to be open at an end. Still not modeled: mitering a
     // through-bore specially against the end cap.
+    // What the 3D view draws. MainWindow supplies it: the engine's live state at rest, or the moment
+    // of playback while a run is playing - the same split the 2D canvas uses.
+    public sealed record Stock3DView(
+        StockProfile Stock,
+        List<(double X, double Z, string Type)> ToolPath,      // drawn: (from, to) pairs
+        (double X, double Z) ToolRender,                         // where the tool actually is
+        List<(double X, double Z, string Type)> FramingPath);   // the whole run, for camera framing
+
     public partial class Stock3DWindow : Window
     {
-        // Not readonly - MainWindow's Reset replaces its whole _sim instance (a fresh LatheSimulator,
-        // fresh Stock) rather than mutating the existing one, so this window needs a way to follow
-        // along to the new instance rather than keep rendering the discarded one.
-        private LatheSimulator _sim;
+        // Asked for the current view on every refresh. Replaces holding a LatheSimulator reference,
+        // which had to be swapped by hand on RESET and could only ever show the end of a run.
+        private readonly Func<Stock3DView> _view;
 
         private const int CircumferentialSegments = 32;
 
@@ -42,18 +49,17 @@ namespace FanucSimulator
         private bool _isDragging;
         private Point _lastMousePos;
 
-        public Stock3DWindow(LatheSimulator sim)
+        public Stock3DWindow(Func<Stock3DView> view)
         {
             InitializeComponent();
-            _sim = sim;
+            _view = view;
             Loaded += (_, _) => Refresh();
         }
 
-        public void UpdateSimulator(LatheSimulator sim) => _sim = sim;
-
         public void Refresh()
         {
-            var stock = _sim.Stock;
+            var view = _view();
+            var stock = view.Stock;
 
             // Frame from the stock's own envelope AND wherever the toolpath has actually gone - a
             // rapid clearance move (e.g. retracting to a tool-change position) routinely reaches well
@@ -64,7 +70,9 @@ namespace FanucSimulator
                 maxRadius = Math.Max(maxRadius, stock.OuterX[i] / 2.0);
             var zMin = stock.ZStart;
             var zMax = stock.ZEnd;
-            foreach (var (x, z, _) in _sim.ToolPath)
+            // The whole run's path, not just what playback has drawn so far - otherwise the camera
+            // would re-frame itself partway through as the path grew.
+            foreach (var (x, z, _) in view.FramingPath)
             {
                 maxRadius = Math.Max(maxRadius, x / 2.0);
                 zMin = Math.Min(zMin, z);
@@ -152,8 +160,10 @@ namespace FanucSimulator
             }
 
             group.Children.Add(BuildChuck(stock.ZStart, stock.OuterX[0]));
-            group.Children.Add(BuildToolMarker(_sim.X, _sim.Z));
-            group.Children.Add(BuildToolPath(_sim.ToolPath));
+            // At the tool's true position (offsets and comp included), where its path ends - it used
+            // to use the programmed position, which drifts off the path whenever an offset is set.
+            group.Children.Add(BuildToolMarker(view.ToolRender.X, view.ToolRender.Z));
+            group.Children.Add(BuildToolPath(view.ToolPath));
 
             MainViewport.Children.Clear();
             MainViewport.Children.Add(new ModelVisual3D { Content = group });
