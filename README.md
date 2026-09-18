@@ -47,7 +47,7 @@ runs real conditionals and loops, not just token substitution.
   outline with a toolpath drawn over it.
 - **Realistic cycle-time simulation**: RUN TIME/CYCLE TIME on the POS ALL screen are computed from
   actual commanded physics (feed rate + distance, true arc length for G02/G03, G04 dwell duration,
-  a rapid-traverse default) as the program runs, not wall-clock time - a program that would take two
+  the machine's real 500 in/min rapid) as the program runs, not wall-clock time - a program that would take two
   minutes on a real machine reports about two minutes, even though the simulator itself executes
   instantly.
 - **A 3D view**: the same carved stock revolved into a shaded 3D solid alongside a 3-jaw chuck
@@ -108,7 +108,7 @@ A few worth starting with:
 ## Testing
 
 `EngineTest/` is a headless console harness (source-linked against the same engine files, no test
-framework dependency) with 277 hand-rolled assertions covering every documented G/M-code, both
+framework dependency) with 312 hand-rolled assertions covering every documented G/M-code, both
 canned-cycle directions, macro control flow, geometry checks against several of the demo programs
 above, the catalog-persistence round-trip, and exact closed-form cycle-time checks. Runs
 automatically on every push via GitHub Actions (see the badge at the top of this file).

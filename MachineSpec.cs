@@ -28,6 +28,19 @@ namespace FanucSimulator
         // invent a restriction the machine does not have.
         public const double MaxSpindleRpm = 4500;
 
+        // Rapid traverse, both axes. Confirmed by the machine's owner (2026-09-18) - this machine's
+        // rapid is 500 in/min. Not published anywhere the earlier spec research found; it lives in
+        // the control's own parameter 1420. Replaces an invented 10 m/min placeholder that was about
+        // 21% slow, which never mattered much while programs ran instantly but is on screen once the
+        // tool is seen moving.
+        //
+        // Assumption, not yet confirmed: rapids move in a straight line (parameter 1401 bit 1, LRP,
+        // set to 1). If this control has LRP=0, each axis rapids at full speed independently and the
+        // path is a "dogleg" - which matters for proving out, since a dogleg can clip something a
+        // straight line misses.
+        public const double RapidTraverseInchesPerMin = 500;
+        public const double RapidTraverseMmPerMin = RapidTraverseInchesPerMin * 25.4;
+
         // Turret. Twelve physical pockets, servo-indexed, but the tool holders are double-sided
         // (confirmed by the machine's owner, 2026-09-01) - each pocket mounts two tools front/back,
         // so the T-word addresses 24 positions, matching the panel's TURRET dial (which reads 1-24,

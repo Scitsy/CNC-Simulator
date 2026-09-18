@@ -34,6 +34,81 @@ List<Alarm> RunFull(LatheSimulator sim, List<GCodeParser.Block> blocks, out List
     return allAlarms;
 }
 
+// Runs a program to the end like RunFull, checking after every chunk that the playback timeline
+// the engine recorded is faithful to what the engine actually did. Returns the number of chunks, or
+// -1 on the first broken invariant (with the reason printed), so each caller can Check() it.
+int CheckTimelinesThroughout(LatheSimulator sim, List<GCodeParser.Block> blocks, string label)
+{
+    int next = 0, chunks = 0;
+    while (chunks < 200)
+    {
+        var result = sim.RunProgram(blocks, next);
+        chunks++;
+        var tl = sim.LastTimeline;
+        string? problem = null;
+
+        if (tl == null)
+            problem = "no timeline recorded";
+        else
+        {
+            // 1. The timeline's clock agrees with the cycle-time clock.
+            if (Math.Abs(tl.Duration - sim.SimulatedSecondsElapsed) > 1e-9)
+                problem = $"duration {tl.Duration} != SimulatedSecondsElapsed {sim.SimulatedSecondsElapsed}";
+
+            // 2. Events are back to back - no gaps, no overlaps - and every one has a real line.
+            var t = 0.0;
+            foreach (var ev in tl.Events)
+            {
+                if (problem != null) break;
+                if (Math.Abs(ev.StartTime - t) > 1e-9) problem = $"gap/overlap at t={t} (event starts {ev.StartTime})";
+                else if (ev.Duration < 0) problem = "negative duration";
+                else if (ev.Line <= 0) problem = "event with no program line";
+                t = ev.EndTime;
+            }
+            if (problem == null && Math.Abs(t - tl.Duration) > 1e-9)
+                problem = $"events end at {t}, timeline says {tl.Duration}";
+
+            // 3. Markers are in time order and the run ends with the closing marker.
+            for (int i = 1; problem == null && i < tl.Markers.Count; i++)
+                if (tl.Markers[i].Time < tl.Markers[i - 1].Time - 1e-12)
+                    problem = "markers out of time order";
+            if (problem == null && (tl.Markers.Count == 0 || tl.Markers[^1].Line != 0))
+                problem = "missing closing marker";
+
+            // 4. Replaying every carve onto the start snapshot reproduces the engine's stock exactly.
+            var cursor = new PlaybackCursor(tl);
+            cursor.Seek(tl.Duration);
+            for (int i = 0; problem == null && i <= StockProfile.Resolution; i++)
+                if (cursor.Stock.OuterX[i] != sim.Stock.OuterX[i] || cursor.Stock.InnerX[i] != sim.Stock.InnerX[i])
+                    problem = $"replayed stock differs from engine stock at sample {i}";
+
+            // 5. At the end the tool is where the engine left it, and the whole log is revealed.
+            if (problem == null && tl.Events.Count > 0 && cursor.ToolProgrammed is { } end &&
+                (Math.Abs(end.X - sim.X) > 1e-9 || Math.Abs(end.Z - sim.Z) > 1e-9))
+                problem = $"cursor ends at X{end.X} Z{end.Z}, engine at X{sim.X} Z{sim.Z}";
+            if (problem == null && cursor.RevealedLog.Messages != sim.Messages.Count)
+                problem = $"end reveals {cursor.RevealedLog.Messages} of {sim.Messages.Count} messages";
+
+            // 6. Seeking back to the start restores the snapshot.
+            cursor.Seek(0);
+            for (int i = 0; problem == null && i <= StockProfile.Resolution; i++)
+                if (cursor.Stock.OuterX[i] != tl.StartStock.OuterX[i] || cursor.Stock.InnerX[i] != tl.StartStock.InnerX[i])
+                    problem = $"seek back to 0 leaves stock changed at sample {i}";
+        }
+
+        if (problem != null)
+        {
+            Console.WriteLine($"    {label}, chunk {chunks}: {problem}");
+            return -1;
+        }
+
+        if (result.ProgramEnded || !result.Paused)
+            break;
+        next = result.NextBlockIndex;
+    }
+    return chunks;
+}
+
 // Every rapid segment ("rapid" or "collision" type) in the toolpath must change only X or only Z,
 // never both - that's the whole point of the retract-path fix. Skips the very first segment pair,
 // which is just the program's own initial approach move (e.g. "G0 X52 Z2" from the simulator's
@@ -886,14 +961,15 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
     Check("15.6s (52mm @ 200mm/min effective)", Math.Abs(sim.SimulatedSecondsElapsed - 15.6) < 0.001);
 }
 
-// 52. G00 rapid move - against the invented 10000mm/min rapid traverse rate.
+// 52. G00 rapid move - against this machine's real 500 in/min rapid traverse. Programmed in inch so
+// the expected value is a clean closed form: 5 in / 500 in/min = 0.01 min = 0.6 s.
 {
     var sim = new LatheSimulator();
-    var program = "G21\nT0101\nG00 Z-50\nM30\n"; // 50mm @ 10000mm/min = 0.3s
+    var program = "G20\nT0101\nG00 Z-5\nM30\n";
     var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
-    Console.WriteLine("[52] G00 rapid: exact expected seconds against the 10000mm/min default");
+    Console.WriteLine("[52] G00 rapid: exact expected seconds at the machine's 500 in/min rapid");
     Check("no alarms", alarms.Count == 0);
-    Check("0.3s (50mm @ 10000mm/min)", Math.Abs(sim.SimulatedSecondsElapsed - 0.3) < 0.001);
+    Check("0.6s (5in @ 500in/min)", Math.Abs(sim.SimulatedSecondsElapsed - 0.6) < 0.001);
 }
 
 // 53. G04 dwell (both P and X forms) now actually costs simulated time, not just a log message.
@@ -915,12 +991,12 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
 // back to chord-summed distance.
 {
     var sim = new LatheSimulator();
-    // G00 X20 Z0: rapid 20mm @ 10000mm/min = 0.12s.
+    // G00 X20 Z0: rapid 20mm @ 12700mm/min (500 in/min) = 0.09449s.
     // G02 X30 Z-10 I0 K-10: quarter circle, center (20,-10), radius 10, sweep 90deg (pi/2 rad) ->
     // arc length 10*pi/2 = 15.70796...mm @ 100mm/min (G98) = 9.42478...s.
     var program = "G21\nG98\nT0101\nG00 X20 Z0\nG02 X30 Z-10 I0 K-10 F100\nM30\n";
     var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
-    var expected = 20.0 / 10000 * 60 + (10.0 * Math.PI / 2) / 100 * 60;
+    var expected = 20.0 / (500 * 25.4) * 60 + (10.0 * Math.PI / 2) / 100 * 60;
     Console.WriteLine("[54] G02 arc time from true arc length (radius * sweep), not chord distance");
     Check("no alarms", alarms.Count == 0);
     Check($"{expected:F5}s (rapid approach + true arc length @ 100mm/min)",
@@ -1338,6 +1414,114 @@ Console.WriteLine();
           log.Contains("M21: Door interlock bypass on"));
     Check("M14 is the parts catcher", log.Contains("M14: Parts catcher extend"));
     Check("M37 is the chip conveyor", log.Contains("M37: Chip conveyor CW"));
+}
+
+// ---- [78] Playback timeline is faithful on every demo program ----
+{
+    Console.WriteLine("[78] Playback timeline replays every demo program exactly");
+    var stockRx = new System.Text.RegularExpressions.Regex(
+        @"\(STOCK:\s*([0-9.]+)\s*(MM|IN)\s*(?:OD|DIA)\s*X\s*([0-9.]+)\s*(MM|IN)?",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    foreach (var path in Directory.GetFiles(@"..\NCFiles", "*.nc").OrderBy(p => p))
+    {
+        var text = File.ReadAllText(path);
+        var sim = new LatheSimulator();
+        var m = stockRx.Match(text);
+        if (m.Success)
+        {
+            var inch = m.Groups[2].Value.Equals("IN", StringComparison.OrdinalIgnoreCase);
+            var lenInch = m.Groups[4].Success ? m.Groups[4].Value.Equals("IN", StringComparison.OrdinalIgnoreCase) : inch;
+            sim.StockDiameter = double.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) * (inch ? 25.4 : 1);
+            sim.StockLength = double.Parse(m.Groups[3].Value, System.Globalization.CultureInfo.InvariantCulture) * (lenInch ? 25.4 : 1);
+            sim.ResetStockProfile();
+        }
+        var chunks = CheckTimelinesThroughout(sim, new GCodeParser().Parse(text), Path.GetFileName(path));
+        Check($"{Path.GetFileName(path)} ({chunks} chunk{(chunks == 1 ? "" : "s")})", chunks > 0);
+    }
+}
+
+// ---- [79] Playback cursor mid-move: position, distance to go, line, partial carve ----
+{
+    Console.WriteLine("[79] Playback cursor is correct part-way through a cut");
+    // Lines: 1 G21, 2 G98, 3 T0101, 4 G00 X50 Z2, 5 G01 Z-50 F100, 6 M30.
+    var sim = new LatheSimulator();
+    sim.RunProgram(new GCodeParser().Parse("G21\nG98\nT0101\nG00 X50 Z2\nG01 Z-50 F100\nM30\n"));
+    var tl = sim.LastTimeline!;
+    var cut = tl.Events.Single(e => e.Kind == TimelineEventKind.Feed);
+    Check("the feed move takes 31.2s (52mm @ 100mm/min)", Math.Abs(cut.Duration - 31.2) < 1e-9);
+    Check("the rapid before it takes 50.04mm @ 500in/min",
+        Math.Abs(cut.StartTime - Math.Sqrt(50 * 50 + 2 * 2) / (500 * 25.4) * 60) < 1e-9);
+
+    var cursor = new PlaybackCursor(tl);
+    cursor.Seek(cut.StartTime + cut.Duration / 2);
+    var pos = cursor.ToolProgrammed!.Value;
+    Check("halfway: tool at X50 Z-24", Math.Abs(pos.X - 50) < 1e-9 && Math.Abs(pos.Z - (-24)) < 1e-9);
+    var dtg = cursor.DistanceToGo;
+    Check("halfway: distance to go is Z-26, X0", Math.Abs(dtg.X) < 1e-9 && Math.Abs(dtg.Z - (-26)) < 1e-9);
+    Check("halfway: the running block is line 5 (the G01)", cursor.CurrentLine == 5);
+    Check("halfway: spindle state comes from the run, feed is 100", cursor.State is { } st && Math.Abs(st.FeedRate - 100) < 1e-9);
+    Check("halfway: stock already cut behind the tool (Z-10 is at X50)",
+        Math.Abs(cursor.Stock.OuterX[NearestIndex(cursor.Stock, -10)] - 50) < 0.5);
+    Check("halfway: stock not yet cut ahead of the tool (Z-40 still X76.2)",
+        Math.Abs(cursor.Stock.OuterX[NearestIndex(cursor.Stock, -40)] - 76.2) < 1e-9);
+    Check("halfway: the log shows the running block, not the ones after it",
+        cursor.RevealedLog.Messages < sim.Messages.Count);
+
+    // Scrubbing backwards rebuilds rather than leaving later cuts behind.
+    cursor.Seek(cut.StartTime + cut.Duration * 0.1);
+    Check("scrub back: Z-10 is uncut again", Math.Abs(cursor.Stock.OuterX[NearestIndex(cursor.Stock, -10)] - 76.2) < 1e-9);
+}
+
+// ---- [80] Arcs and dwells: exact timing inside the timeline ----
+{
+    Console.WriteLine("[80] Arc chords share the arc's exact time; dwells are timed events");
+    var sim = new LatheSimulator();
+    sim.RunProgram(new GCodeParser().Parse("G21\nG98\nT0101\nG00 X20 Z0\nG02 X30 Z-10 I0 K-10 F100\nG04 P1500\nM30\n"));
+    var tl = sim.LastTimeline!;
+    var arcTime = tl.Events.Where(e => e.Line == 5).Sum(e => e.Duration);
+    Check("the arc's chords add up to radius x sweep at F100", Math.Abs(arcTime - (10.0 * Math.PI / 2) / 100 * 60) < 1e-9);
+    Check("the arc was recorded as several chords", tl.Events.Count(e => e.Line == 5) > 5);
+    var dwell = tl.Events.Single(e => e.Kind == TimelineEventKind.Dwell);
+    Check("G04 P1500 is a 1.5s dwell event on line 6", Math.Abs(dwell.Duration - 1.5) < 1e-9 && dwell.Line == 6);
+}
+
+// ---- [81] A rapid into the part is found at the right moment ----
+{
+    Console.WriteLine("[81] Playback finds a collision where it happens");
+    // The first rapid of a run is exempt (see [10]); the second plows through untouched stock.
+    var sim = new LatheSimulator();
+    sim.RunProgram(new GCodeParser().Parse("G21\nT0101\nG00 X100 Z5\nG00 X40 Z-20\nG00 X100\nM30\n"));
+    var tl = sim.LastTimeline!;
+    var crash = tl.Events.FirstOrDefault(e => e.Kind == TimelineEventKind.Collision);
+    Check("the plunging rapid is recorded as a collision", crash != null && crash.Line == 4);
+    var cursor = new PlaybackCursor(tl);
+    Check("FirstCollisionBetween finds its start time",
+        crash != null && cursor.FirstCollisionBetween(0, tl.Duration) == crash.StartTime);
+    Check("and nothing before the first rapid finishes",
+        cursor.FirstCollisionBetween(0, tl.Events[0].EndTime - 1e-6) == null);
+}
+
+// ---- [82] Chunks split by stops replay to the same part as one uninterrupted run ----
+{
+    Console.WriteLine("[82] OPT STOP and SINGLE BLOCK chunks replay to the same part");
+    var text = File.ReadAllText(@"..\NCFiles\O0015_panel_switch_demo.nc");
+
+    var whole = new LatheSimulator();
+    RunFull(whole, new GCodeParser().Parse(text), out _);
+
+    foreach (var (name, sim) in new[]
+    {
+        ("OPT STOP", new LatheSimulator { OptionalStop = true }),
+        ("SINGLE BLOCK", new LatheSimulator { SingleBlock = true }),
+    })
+    {
+        var chunks = CheckTimelinesThroughout(sim, new GCodeParser().Parse(text), name);
+        Check($"{name}: every chunk's timeline is faithful ({chunks} chunks)", chunks > 1);
+        var same = true;
+        for (int i = 0; i <= StockProfile.Resolution; i++)
+            same &= sim.Stock.OuterX[i] == whole.Stock.OuterX[i] && sim.Stock.InnerX[i] == whole.Stock.InnerX[i];
+        Check($"{name}: final part identical to the uninterrupted run", same);
+    }
 }
 
 Console.WriteLine($"===== TOTAL: {pass} passed, {fail} failed =====");

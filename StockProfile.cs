@@ -33,6 +33,16 @@ namespace FanucSimulator
 
         public double SampleZ(int i) => ZStart + (ZEnd - ZStart) * i / Resolution;
 
+        // A detached copy - used to snapshot the stock at the start of a run, so playback can replay
+        // the run's carves onto it without touching the engine's live profile.
+        public StockProfile Clone()
+        {
+            var copy = new StockProfile(ZEnd - ZStart, 0);
+            Array.Copy(OuterX, copy.OuterX, OuterX.Length);
+            Array.Copy(InnerX, copy.InnerX, InnerX.Length);
+            return copy;
+        }
+
         // Material removed from the outside in (OD turning, facing, grooving, threading) - clamps
         // the outer boundary down to whatever the tool's edge swept through.
         public void CarveOuter(double z1, double x1, double z2, double x2) => Carve(z1, x1, z2, x2, OuterX, min: true);

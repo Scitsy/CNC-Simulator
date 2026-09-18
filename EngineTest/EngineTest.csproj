@@ -17,6 +17,8 @@
     <Compile Include="..\OffsetTables.cs" Link="OffsetTables.cs" />
     <Compile Include="..\ToolCatalog.cs" Link="ToolCatalog.cs" />
     <Compile Include="..\StockProfile.cs" Link="StockProfile.cs" />
+    <Compile Include="..\MotionTimeline.cs" Link="MotionTimeline.cs" />
+    <Compile Include="..\PlaybackCursor.cs" Link="PlaybackCursor.cs" />
     <Compile Include="..\Alarm.cs" Link="Alarm.cs" />
     <Compile Include="..\LatheSimulator.cs" Link="LatheSimulator.cs" />
     <Compile Include="..\LatheSimulator.CannedCycles.cs" Link="LatheSimulator.CannedCycles.cs" />

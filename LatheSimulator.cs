@@ -32,9 +32,8 @@ namespace FanucSimulator
         // machine. Reset once per RunProgram call, same lifetime as Messages/Alarms/Warnings.
         public double SimulatedSecondsElapsed { get; private set; }
 
-        // No rapid-traverse-rate concept exists elsewhere in the engine - this is an invented,
-        // reasonable default (real lathes vary roughly 10-24 m/min).
-        private const double RapidTraverseRateMmPerMin = 10000;
+        // This machine's real rapid (500 in/min) - see MachineSpec for where it came from.
+        private const double RapidTraverseRateMmPerMin = MachineSpec.RapidTraverseMmPerMin;
 
         // Set around arc tessellation: TessellateArc drives each ~3-degree chord through MoveTo (for
         // offset/comp/collision-checking reuse), but chord-summed distance is only an approximation
@@ -45,8 +44,17 @@ namespace FanucSimulator
 
         private void AddMoveTime(double distanceMm, bool rapid)
         {
-            if (distanceMm <= 0 || _suppressMoveTimeAccumulation)
+            if (_suppressMoveTimeAccumulation)
                 return;
+            SimulatedSecondsElapsed += MoveSeconds(distanceMm, rapid);
+        }
+
+        // How long a move takes on the machine, with no side effects - shared by the cycle-time clock
+        // above and the playback timeline, so the two can never disagree about a move's duration.
+        private double MoveSeconds(double distanceMm, bool rapid)
+        {
+            if (distanceMm <= 0)
+                return 0;
 
             double mmPerMin;
             if (rapid)
@@ -59,7 +67,7 @@ namespace FanucSimulator
                 // turning - with it stopped there's no real feed rate to time against, so skip
                 // rather than divide by zero (or silently invent a rate).
                 if (SpindleSpeed <= 0)
-                    return;
+                    return 0;
                 mmPerMin = FeedRate * SpindleSpeed;
             }
             else
@@ -68,9 +76,62 @@ namespace FanucSimulator
             }
 
             if (mmPerMin <= 0)
-                return;
+                return 0;
 
-            SimulatedSecondsElapsed += distanceMm / mmPerMin * 60;
+            return distanceMm / mmPerMin * 60;
+        }
+
+        // ---- Playback timeline ----
+        // Recorded alongside the instant run so the UI can play it back at machine speed afterwards.
+        // Purely additive: nothing below changes what the engine does, only what it writes down.
+
+        public MotionTimeline? LastTimeline { get; private set; }
+        private MotionTimeline? _timeline;
+        private int _currentLine;
+
+        // The most recent motion event - cutter-comp mitering has to move its end point, the same way
+        // it moves ToolPath's. Dwells never break that chain, so they are not tracked here.
+        private TimelineEvent? _lastMotionEvent;
+
+        private MachineStateSnapshot CaptureState() => new(
+            SpindleSpeed, SpindleDir, CoolantOn, CurrentTool, FeedRate,
+            Modal.Units == UnitsMode.Inch, Modal.Feed == FeedMode.PerRevolution);
+
+        private void RecordMarker(int line)
+        {
+            if (_timeline == null)
+                return;
+            _timeline.Markers.Add(new BlockMarker
+            {
+                Seq = _timeline.NextSeq(),
+                Time = _timeline.Duration,
+                Line = line,
+                MessageCount = Messages.Count,
+                WarningCount = Warnings.Count,
+                AlarmCount = Alarms.Count,
+                State = CaptureState(),
+            });
+        }
+
+        private void RecordDwell(double seconds)
+        {
+            if (_timeline == null)
+                return;
+            _timeline.Events.Add(new TimelineEvent
+            {
+                Seq = _timeline.NextSeq(),
+                StartTime = _timeline.Duration,
+                Duration = seconds,
+                Kind = TimelineEventKind.Dwell,
+                FromRenderX = _lastActualRenderPos?.X ?? X,
+                FromRenderZ = _lastActualRenderPos?.Z ?? Z,
+                ToRenderX = _lastActualRenderPos?.X ?? X,
+                ToRenderZ = _lastActualRenderPos?.Z ?? Z,
+                FromX = X, FromZ = Z, ToX = X, ToZ = Z,
+                Line = _currentLine,
+                State = CaptureState(),
+            });
+            _timeline.Duration += seconds;
         }
 
         public LatheSimulator() : this(new OffsetTables()) { }
@@ -175,6 +236,10 @@ namespace FanucSimulator
             Warnings.Clear();
             SimulatedSecondsElapsed = 0;
 
+            _timeline = new MotionTimeline(Stock.Clone(), ToolPath.Count);
+            LastTimeline = _timeline;
+            _lastMotionEvent = null;
+
             // Only a genuinely fresh run (not a resume after an M00 pause) resets the macro call
             // stack/depth counter - state started by a G65/M98 call must survive an M00 pause and
             // resume within the same logical run, same as every other piece of simulator state does.
@@ -186,6 +251,10 @@ namespace FanucSimulator
             }
 
             var (exit, next) = RunBlockRange(blocks, startIndex, isTopLevel: true);
+
+            // Closing marker: captures the log and machine state after the last block ran, which no
+            // block-start marker would otherwise see (e.g. an M05/M09 on the final line).
+            RecordMarker(0);
             return exit switch
             {
                 BlockRangeExit.Paused => new RunResult { Paused = true, NextBlockIndex = next },
@@ -211,6 +280,11 @@ namespace FanucSimulator
                     i++;
                     continue;
                 }
+
+                // Everything this block records - motion, dwell, log lines - is attributed to its line,
+                // which is what lets playback highlight the block that is actually running.
+                _currentLine = block.Line;
+                RecordMarker(block.Line);
 
                 // Block delete applies at every level, not just the top - a '/' line inside a
                 // subprogram is skipped by the same switch.
@@ -841,11 +915,13 @@ namespace FanucSimulator
             if (block.Params.TryGetValue("P", out var ms))
             {
                 SimulatedSecondsElapsed += ms / 1000.0;
+                RecordDwell(ms / 1000.0);
                 Messages.Add($"G04: Dwell {ms:F0} ms");
             }
             else if (block.Params.TryGetValue("X", out var sec))
             {
                 SimulatedSecondsElapsed += sec;
+                RecordDwell(sec);
                 Messages.Add($"G04: Dwell {sec:F2} sec");
             }
             else
@@ -979,11 +1055,17 @@ namespace FanucSimulator
             if (arcSweep < 1e-9) arcSweep = 2 * Math.PI;
 
             var alarmCountBeforeArc = Alarms.Count;
+            var firstChordEvent = _timeline?.Events.Count ?? 0;
             _suppressMoveTimeAccumulation = true;
             TessellateArc(X, Z, targetX, targetZ, centerX, centerZ, clockwise);
             _suppressMoveTimeAccumulation = false;
-            if (Alarms.Count == alarmCountBeforeArc) // don't charge time for an arc that alarmed out mid-tessellation
+            var arcAlarmed = Alarms.Count != alarmCountBeforeArc;
+            if (!arcAlarmed) // don't charge time for an arc that alarmed out mid-tessellation
                 AddMoveTime(arcRadius * arcSweep, rapid: false);
+
+            // The chords were timed by their straight-line length; spread the arc's exact time across
+            // them instead, so the timeline and the cycle-time clock agree to the last digit.
+            _timeline?.RescaleSince(firstChordEvent, arcAlarmed ? 0 : MoveSeconds(arcRadius * arcSweep, rapid: false));
 
             if (Modal.Spindle == SpindleMode.ConstantSurfaceSpeed)
                 RecalculateCssSpeed();
@@ -1130,6 +1212,14 @@ namespace FanucSimulator
                         if (lastIndex >= 0)
                             ToolPath[lastIndex] = (corner.Value.X, corner.Value.Z, ToolPath[lastIndex].Type);
 
+                        // Keep the playback timeline's drawing in step with ToolPath. Only the drawn
+                        // end point moves - that segment's carve already happened un-mitered.
+                        if (_lastMotionEvent != null)
+                        {
+                            _lastMotionEvent.ToRenderX = corner.Value.X;
+                            _lastMotionEvent.ToRenderZ = corner.Value.Z;
+                        }
+
                         fromRenderX = corner.Value.X;
                         fromRenderZ = corner.Value.Z;
                     }
@@ -1156,7 +1246,11 @@ namespace FanucSimulator
                     ToolPath[^1] = (ToolPath[^1].X, ToolPath[^1].Z, "collision");
                 }
             }
-            else
+            // What this segment carves, recorded exactly as passed to StockProfile so playback can
+            // replay it faithfully.
+            var carve = CarveKind.None;
+            double carveZ1 = 0, carveX1 = 0, carveZ2 = 0, carveX2 = 0;
+            if (!rapid)
             {
                 // Carve the stock profile along the same segment just rendered. An Undefined-type
                 // active tool has no known geometry to carve with (same "don't guess" stance as the
@@ -1166,19 +1260,53 @@ namespace FanucSimulator
                     case ToolType.OdTurning:
                     case ToolType.Grooving:
                     case ToolType.Threading:
-                        Stock.CarveOuter(fromRenderZ, fromRenderX, toRenderZ, toRenderX);
+                        (carve, carveZ1, carveX1, carveZ2, carveX2) = (CarveKind.Outer, fromRenderZ, fromRenderX, toRenderZ, toRenderX);
                         break;
                     case ToolType.IdBoring:
                     case ToolType.IdGrooving:
-                        Stock.CarveInner(fromRenderZ, fromRenderX, toRenderZ, toRenderX);
+                        (carve, carveZ1, carveX1, carveZ2, carveX2) = (CarveKind.Inner, fromRenderZ, fromRenderX, toRenderZ, toRenderX);
                         break;
                     case ToolType.Drill:
                         // A drill's hole diameter is the tool's fixed geometry, not the programmed X
                         // (which is typically 0 - the drill tip's centerline travel).
-                        Stock.CarveInner(fromRenderZ, offset.Width, toRenderZ, offset.Width);
+                        (carve, carveZ1, carveX1, carveZ2, carveX2) = (CarveKind.Inner, fromRenderZ, offset.Width, toRenderZ, offset.Width);
                         break;
                 }
+
+                if (carve == CarveKind.Outer)
+                    Stock.CarveOuter(carveZ1, carveX1, carveZ2, carveX2);
+                else if (carve == CarveKind.Inner)
+                    Stock.CarveInner(carveZ1, carveX1, carveZ2, carveX2);
             }
+
+            if (_timeline != null)
+            {
+                // Inside an arc, the chords' time is provisional - ApplyArcMotion rescales them so
+                // they share the arc's exact duration, the same number the cycle-time clock gets.
+                var seconds = MoveSeconds(len, rapid);
+                var ev = new TimelineEvent
+                {
+                    Seq = _timeline.NextSeq(),
+                    StartTime = _timeline.Duration,
+                    Duration = seconds,
+                    Kind = !rapid ? TimelineEventKind.Feed
+                        : ToolPath[^1].Type == "collision" ? TimelineEventKind.Collision
+                        : TimelineEventKind.Rapid,
+                    FromRenderX = fromRenderX,
+                    FromRenderZ = fromRenderZ,
+                    ToRenderX = toRenderX,
+                    ToRenderZ = toRenderZ,
+                    FromX = X, FromZ = Z, ToX = targetX, ToZ = targetZ,
+                    Carve = carve,
+                    CarveZ1 = carveZ1, CarveX1 = carveX1, CarveZ2 = carveZ2, CarveX2 = carveX2,
+                    Line = _currentLine,
+                    State = CaptureState(),
+                };
+                _timeline.Events.Add(ev);
+                _timeline.Duration += seconds;
+                _lastMotionEvent = ev;
+            }
+
             _lastActualRenderPos = (toRenderX, toRenderZ);
 
             _pendingCompLine = (compActive && !rapid) ? (fromRenderX, fromRenderZ, ndx, ndz) : null;
