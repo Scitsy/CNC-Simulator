@@ -108,7 +108,7 @@ A few worth starting with:
 ## Testing
 
 `EngineTest/` is a headless console harness (source-linked against the same engine files, no test
-framework dependency) with 264 hand-rolled assertions covering every documented G/M-code, both
+framework dependency) with 277 hand-rolled assertions covering every documented G/M-code, both
 canned-cycle directions, macro control flow, geometry checks against several of the demo programs
 above, the catalog-persistence round-trip, and exact closed-form cycle-time checks. Runs
 automatically on every push via GitHub Actions (see the badge at the top of this file).
@@ -132,12 +132,13 @@ dotnet run
 ## Scope
 
 This models a 2-axis turning center closely enough to be useful for learning and testing programs,
-not a certified twin of any real control. **The auxiliary M-codes are not verified.** FANUC's own
-codes (spindle, coolant, program control, subprograms) are standard and correct, but chuck,
-tailstock, parts catcher, wash gun and conveyor codes are implemented in the machine builder's PMC
-ladder rather than in the CNC - so no FANUC manual defines them, and Leadwell does not publish the
-LTC-208's list openly. They live in one table in `LatheSimulator.cs`, each tagged with how it was
-arrived at; the HELP screen explains how to read the real list off the machine's own ladder. Not currently modeled: Custom Macro B indirect addressing
+not a certified twin of any real control. The auxiliary M-codes are transcribed from the LTC-208's
+own operation manual (section 4-1) rather than inferred: chuck, quill, parts catcher, door
+interlock, conveyor and the rest are implemented in the machine builder's PMC ladder rather than in
+the CNC, so no FANUC manual defines them. Codes the manual marks as not fitted on this machine
+(sub-spindle, Cs-axis, live tooling, Y axis) still alarm, since commanding one would be a
+programming error. They are accepted and logged rather than simulated - this engine has no chuck,
+tailstock or conveyor state to move. Not currently modeled: Custom Macro B indirect addressing
 (`#[expr]`) and multiple statements per block, and general system variables beyond the three listed
 above. The 3D view is a first pass: the chuck is a simplified 3-jaw stand-in (flat wedge jaws, not
 manufacturer-accurate geometry), the cutaway view only ever cuts the workpiece (not the chuck), and

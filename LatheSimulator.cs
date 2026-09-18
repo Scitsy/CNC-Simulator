@@ -637,50 +637,116 @@ namespace FanucSimulator
         // distinction is the point of the table: "the panel has a chuck clamp" is verified, while
         // "the chuck clamp is M10" is not, and collapsing the two is how someone ends up trusting
         // a guess on real iron.
-        private enum CodeSource
+        // Whether this machine actually has the equipment a code drives. Straight from the manual's
+        // own S/O/X columns, read down the base (LTC-208, no suffix) column - the -M/-S/-SM/-MY/-SMY
+        // columns are the live-tooling, sub-spindle and Y-axis variants, which this machine is not.
+        private enum CodeFitment
         {
-            Fanuc,      // Defined by FANUC; identical on every FANUC lathe.
-            Convention, // Widely used across builders and corroborated for Leadwell specifically.
-            Guess,      // Function confirmed from the machine's panel; NUMBER inferred, not read.
+            Standard, // "S" - fitted on every base LTC-208.
+            Option,   // "O" - the code exists, but only does anything if that option was ordered.
         }
 
         // Auxiliary M-codes are implemented in the machine BUILDER's PMC ladder, not in the CNC, so
-        // a control accepts exactly whatever its own ladder decodes and nothing else. FANUC's own
-        // manual for the 0i-TF Plus cannot answer what these are - only Leadwell's documentation
-        // for this machine can.
+        // a control accepts exactly whatever its own ladder decodes and nothing else. No FANUC
+        // manual can answer what these are - only Leadwell's can.
         //
-        // For the reference machine (Leadwell LTC-208, serial L2TAG0843, 2020 - see MachineSpec)
-        // that documentation is not published openly; Leadwell lists an "LTC-20 FANUC Machine
-        // Instruction Manual" on its own download page but does not serve it. So the table below
-        // is still not verified against the machine, and every entry says how it was arrived at.
+        // *** These are now the REAL codes, transcribed from the LTC-208 operation manual's own
+        // M-code list (section 4-1), photographed by the machine's owner on 2026-09-18. The pages
+        // are in ReferenceMaterial/Manual/. Everything here was previously an educated guess, and
+        // three of those guesses were wrong in ways that would have mattered - see the note on
+        // M21/M22 below. ***
         //
-        // Correcting one is a one-line edit here - nothing else in the engine hardcodes an
-        // auxiliary number. Two ways to get the real list, in order of reliability:
-        //   1. Leadwell's operation manual for the LTC-208 (ask Leadwell or the dealer, quoting
-        //      the serial above).
-        //   2. The machine's own PMC ladder, on the control: SYSTEM -> PMC -> PMCLAD. The M-code
-        //      decode instructions there name precisely which M numbers this machine implements,
-        //      which is the ground truth the manual is merely describing.
-        private static readonly Dictionary<int, (string Description, CodeSource Source)> AuxiliaryMCodes = new()
+        // Codes marked "X" on the base machine are deliberately absent from this table, so they
+        // still alarm: they belong to equipment this machine does not have (sub-spindle M59/M60/
+        // M110/M111, Cs-axis M90/M91/M96, live tooling M93/M94/M95/M109, Y axis M112/M113,
+        // push-bar M16/M76, and essentially everything from M114 up). Running one on this machine
+        // would be a programming error, so the simulator treats it as one.
+        //
+        // The manual's own "SPARE" entries are likewise left out - an unassigned code doing
+        // nothing silently is not something to imitate.
+        private static readonly Dictionary<int, (string Description, CodeFitment Fitment)> AuxiliaryMCodes = new()
         {
-            // Corroborated for Leadwell lathes specifically, across several independent operator
-            // reports, and consistent with the general lathe convention.
-            [10] = ("Chuck clamp", CodeSource.Convention),
-            [11] = ("Chuck unclamp", CodeSource.Convention),
+            // --- Workholding and tailstock ---
+            [10] = ("Spindle #1 chuck clamp", CodeFitment.Standard),
+            [11] = ("Spindle #1 chuck unclamp", CodeFitment.Standard),
+            [12] = ("Quill out", CodeFitment.Standard),
+            [13] = ("Quill in", CodeFitment.Standard),
+            [31] = ("Spindle #1 chuck bypass on", CodeFitment.Standard),
+            [32] = ("Spindle #1 chuck bypass off", CodeFitment.Standard),
+            [53] = ("Steady clamp", CodeFitment.Option),
+            [54] = ("Steady unclamp", CodeFitment.Option),
+            [55] = ("Tail stock clamp", CodeFitment.Option),
+            [56] = ("Tail stock unclamp", CodeFitment.Option),
+            [63] = ("Spindle #1 chuck low pressure mode on", CodeFitment.Option),
+            [64] = ("Spindle #1 chuck low pressure mode off", CodeFitment.Option),
 
-            // Tailstock is the least settled of these. M12/M13 is one common pairing, but M21/M22
-            // and M78/M79 are all in use on different builders' lathes - so this is a guess even
-            // though the function certainly exists on the machine.
-            [12] = ("Tailstock quill advance", CodeSource.Guess),
-            [13] = ("Tailstock quill retract", CodeSource.Guess),
+            // --- Spindle auxiliaries ---
+            // M19/M20 are the orientation pair. M19 is also handled directly in ApplyMCode, since
+            // it is one of the few auxiliary codes with an agreed cross-builder meaning.
+            [20] = ("Spindle #1 orientation off", CodeFitment.Standard),
+            [29] = ("Rigid tapping", CodeFitment.Standard),
+            [57] = ("Spindle #1 air blow on", CodeFitment.Option),
+            [58] = ("Spindle #1 air blow off", CodeFitment.Option),
+            [74] = ("Spindle revolt direction change valid", CodeFitment.Option),
+            [75] = ("Spindle revolt restore", CodeFitment.Option),
+            [77] = ("Spindle #1 load up set", CodeFitment.Option),
+            [78] = ("Spindle #1 load detect off", CodeFitment.Option),
+            [79] = ("Spindle #1 load down set", CodeFitment.Option),
+            [40] = ("Low gear mode on", CodeFitment.Option),
+            [41] = ("High gear mode on", CodeFitment.Option),
 
-            // No convergent source for any of these on a Leadwell. Pure inference from the panel.
-            [21] = ("Parts catcher out", CodeSource.Guess),
-            [22] = ("Parts catcher in", CodeSource.Guess),
-            [50] = ("Wash gun on", CodeSource.Guess),
-            [51] = ("Wash gun off", CodeSource.Guess),
-            [52] = ("Chip conveyor on", CodeSource.Guess),
-            [53] = ("Chip conveyor off", CodeSource.Guess),
+            // --- Guarding and interlocks ---
+            // NOTE: M21/M22 were guessed as "parts catcher out/in" before the manual turned up.
+            // They are the DOOR INTERLOCK BYPASS. That guess was the most dangerous one in the old
+            // table: a program written against it would have been bypassing the door interlock
+            // while its author believed it was swinging a parts catcher.
+            [21] = ("Door interlock bypass on", CodeFitment.Standard),
+            [22] = ("Door interlock bypass off", CodeFitment.Standard),
+            [17] = ("Auto door close", CodeFitment.Option),
+            [18] = ("Auto door open", CodeFitment.Option),
+
+            // --- Part handling ---
+            // Parts catcher is M14/M15, not the M21/M22 previously guessed.
+            [14] = ("Parts catcher extend", CodeFitment.Option),
+            [15] = ("Parts catcher retract", CodeFitment.Option),
+            [25] = ("Bar feeder extend", CodeFitment.Option),
+            [26] = ("Bar feeder on", CodeFitment.Option),
+            [27] = ("Bar feeder off", CodeFitment.Option),
+            [28] = ("Load new bar for barfeeder", CodeFitment.Option),
+            [50] = ("Robot on", CodeFitment.Option),
+
+            // --- Coolant, swarf and cleaning ---
+            // The old table guessed M50/M51 as a wash gun and M52/M53 as the chip conveyor. Both
+            // were wrong: the conveyor is M37/M38, and there is no wash-gun code at all - the
+            // nearest real codes are M67 chip clean and M68 steady rest clean.
+            [7]  = ("Coolant through spindle on", CodeFitment.Option),
+            [37] = ("Chip conveyor CW", CodeFitment.Standard),
+            [38] = ("Chip conveyor stop", CodeFitment.Standard),
+            [67] = ("Chip clean", CodeFitment.Option),
+            [68] = ("Steady rest clean", CodeFitment.Option),
+
+            // --- Program and control behaviour ---
+            [23] = ("Chamfering on", CodeFitment.Standard),
+            [24] = ("Chamfering off", CodeFitment.Standard),
+            [33] = ("Block skip on", CodeFitment.Standard),
+            [34] = ("Block skip off", CodeFitment.Standard),
+            [47] = ("Chuck soft limit 2 unvalid", CodeFitment.Standard),
+            [48] = ("Tail stock soft limit 3 unvalid", CodeFitment.Standard),
+            [49] = ("Soft limit 2 & 3 valid", CodeFitment.Standard),
+            [51] = ("Error detect off", CodeFitment.Standard),
+            [52] = ("Error detect on", CodeFitment.Standard),
+            [97] = ("Parts counter", CodeFitment.Standard),
+            [42] = ("Call macro program (macro type B)", CodeFitment.Option),
+            [61] = ("Mirror image X off", CodeFitment.Option),
+            [71] = ("Mirror image X on", CodeFitment.Option),
+            [65] = ("PMC-axis control on", CodeFitment.Option),
+            [66] = ("PMC-axis control off", CodeFitment.Option),
+
+            // --- Tool setter ---
+            [43] = ("Setter down", CodeFitment.Option),
+            [44] = ("Setter up", CodeFitment.Option),
+            [45] = ("Hydraulic tooling-axis I mode on", CodeFitment.Option),
+            [46] = ("Hydraulic tooling-axis L mode on", CodeFitment.Option),
         };
 
         private bool IsAcceptedAuxiliaryMCode(int code)
@@ -688,13 +754,13 @@ namespace FanucSimulator
             if (!AuxiliaryMCodes.TryGetValue(code, out var entry))
                 return false;
 
-            // Flagged at the point of use, not just in the table's comment - without this the log
-            // reads exactly like a verified code and invites the reader to trust a guess.
-            var note = entry.Source switch
-            {
-                CodeSource.Convention => "builder-specific - matches common Leadwell usage, NOT verified on this machine",
-                _ => "builder-specific - NUMBER IS A GUESS, function inferred from the panel",
-            };
+            // The engine models none of this equipment - there is no chuck state, tailstock quill,
+            // conveyor or parts catcher here - so these are accepted and logged, not acted on. Said
+            // at the point of use rather than only in the table's comment, so nobody reads a log
+            // line as proof the simulator did the thing.
+            var note = entry.Fitment == CodeFitment.Option
+                ? "manual: option - not modeled here"
+                : "manual: standard - not modeled here";
             Messages.Add($"M{code:D2}: {entry.Description} ({note})");
             return true;
         }

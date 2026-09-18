@@ -1015,9 +1015,13 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
     Console.WriteLine("[61] Unsupported codes raise an improper-G-code alarm");
     Check("unsupported G73 alarms", alarms.Exists(a => a.Number == 10));
 
+    // M112 is Y-AXIS CLAMP: a real FANUC/Leadwell code, but marked X on the base LTC-208 -
+    // this machine has no Y axis. Commanding it is a programming error, so it must still alarm.
+    // (This check used M63 until the manual turned up; M63 is really chuck low-pressure mode,
+    // an option this machine can have, so it stopped being an example of "unsupported".)
     var sim2 = new LatheSimulator();
-    var alarms2 = RunFull(sim2, new GCodeParser().Parse("G21\nT0101\nM63\nM30\n"), out _);
-    Check("unsupported M63 alarms", alarms2.Exists(a => a.Number == 10));
+    var alarms2 = RunFull(sim2, new GCodeParser().Parse("G21\nT0101\nM112\nM30\n"), out _);
+    Check("M112 (Y-axis clamp, not fitted) alarms", alarms2.Exists(a => a.Number == 10));
 
     // ...but the inert modal codes a real control carries must NOT alarm.
     var sim3 = new LatheSimulator();
@@ -1057,9 +1061,13 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
     Check("program reported as ended", result.ProgramEnded);
     Check("the block after M02 never ran", Math.Abs(sim.X - 50) < 0.01 && Math.Abs(sim.Z - 2) < 0.01);
 
+    // The manual's own auxiliary codes for this machine, including the three the previously
+    // guessed table had wrong: the parts catcher is M14/M15 (was guessed M21/M22), the conveyor
+    // is M37/M38 (was guessed M52/M53), and M21/M22 are really the door interlock bypass.
     var sim2 = new LatheSimulator();
-    var alarms2 = RunFull(sim2, new GCodeParser().Parse("G21\nT0101\nM10\nM11\nM19\nM50\nM51\nM30\n"), out _);
-    Check("inferred auxiliary M-codes do not alarm", alarms2.Count == 0);
+    var alarms2 = RunFull(sim2, new GCodeParser().Parse(
+        "G21\nT0101\nM10\nM11\nM12\nM13\nM14\nM15\nM19\nM20\nM21\nM22\nM37\nM38\nM67\nM97\nM30\n"), out _);
+    Check("manual-listed auxiliary M-codes do not alarm", alarms2.Count == 0);
 }
 
 // 64. G28 honours an intermediate point when the block gives one, instead of always going straight
@@ -1298,6 +1306,38 @@ Console.WriteLine();
     Check("a station the file did describe is preserved", loaded.Tools.ContainsKey(1));
 
     File.Delete(tmp);
+}
+
+// ---- [77] The auxiliary M-codes match the machine's own manual ----
+{
+    Console.WriteLine("[77] Auxiliary M-codes match the LTC-208 manual");
+
+    // Codes the manual lists for the base machine must be accepted...
+    var accepted = new LatheSimulator();
+    var acceptedAlarms = RunFull(accepted, new GCodeParser().Parse(
+        "G21\nT0101\nM07\nM14\nM15\nM17\nM18\nM23\nM24\nM29\nM31\nM32"
+        + "\nM33\nM34\nM37\nM38\nM47\nM48\nM49\nM51\nM52\nM55\nM56"
+        + "\nM57\nM58\nM67\nM68\nM97\nM30\n"), out _);
+    Check("every manual-listed base-machine code is accepted", acceptedAlarms.Count == 0);
+
+    // ...and codes the manual marks X on this machine must not be, because the equipment is not
+    // there: push-bar, sub-spindle, Cs-axis, live tooling, Y axis.
+    foreach (var notFitted in new[] { "M16", "M59", "M60", "M76", "M90", "M93", "M109", "M110", "M112" })
+    {
+        var sim = new LatheSimulator();
+        var alarms = RunFull(sim, new GCodeParser().Parse("G21\nT0101\n" + notFitted + "\nM30\n"), out _);
+        Check($"{notFitted} (not fitted on this machine) alarms", alarms.Exists(a => a.Number == 10));
+    }
+
+    // The three the old guessed table got wrong, pinned by the description the engine logs so they
+    // cannot quietly drift back to the guessed meanings.
+    var reassigned = new LatheSimulator();
+    RunFull(reassigned, new GCodeParser().Parse("G21\nT0101\nM21\nM14\nM37\nM30\n"), out _);
+    var log = string.Join(" | ", reassigned.Messages);
+    Check("M21 is the door interlock bypass, not a parts catcher",
+          log.Contains("M21: Door interlock bypass on"));
+    Check("M14 is the parts catcher", log.Contains("M14: Parts catcher extend"));
+    Check("M37 is the chip conveyor", log.Contains("M37: Chip conveyor CW"));
 }
 
 Console.WriteLine($"===== TOTAL: {pass} passed, {fail} failed =====");
