@@ -2023,5 +2023,35 @@ Console.WriteLine();
     Check("no alarms", sim.Alarms.Count == 0);
 }
 
+// ---- [93] G76: flank infeed, finishing allowance, and no nose comp ----
+{
+    Console.WriteLine("[93] G76 threading pass by pass, as CIMCO Edit's Backplot shows O0005");
+    List<(double X, double Z)> Passes(string extra)
+    {
+        var sim = new LatheSimulator { StockDiameter = 30, StockLength = 50 };
+        sim.ResetStockProfile();
+        sim.Offsets.GetOrCreateTool(4).Type = ToolType.Threading;
+        sim.Offsets.GetOrCreateTool(4).NoseRadius = 0.2;
+        sim.RunProgram(new GCodeParser().Parse(
+            "G21\nG99\nT0404\nM03 S600\n" + extra + "G00 X24 Z2\nG76 P020060 Q100 R0.05\nG76 X21.8 Z-30 R0 P1100 Q300 F2.0\nM30\n"));
+        return sim.LastTimeline!.Events
+            .Where(e => e.Kind == TimelineEventKind.Feed && Math.Abs(e.FromX - e.ToX) < 1e-9 && Math.Abs(e.FromZ - e.ToZ) > 5)
+            .Select(e => (Math.Round(e.FromX, 3), Math.Round(e.FromZ, 3))).ToList();
+    }
+    // CIMCO's passes for this cycle (X, start Z): first cut 0.3, then 0.3 x sqrt2 = 0.424, then the
+    // 0.1 minimum, rough to 1.1 - 0.05 = 1.05 (X21.9), then P02 = two finishing passes at 1.1 (X21.8).
+    // Each shallower pass starts (1.1 - depth) x tan30 further along: flank infeed.
+    var expected = new List<(double, double)>
+    {
+        (23.4, 1.538), (23.152, 1.61), (22.952, 1.668), (22.752, 1.725), (22.552, 1.783), (22.352, 1.841),
+        (22.152, 1.899), (21.952, 1.956), (21.9, 1.971), (21.8, 1.971), (21.8, 1.971),
+    };
+    var passes = Passes("");
+    Check($"G76 passes match CIMCO's: {string.Join(" ", passes.Select(p => $"X{p.X}/Z{p.Z}"))}",
+        passes.Count == expected.Count && passes.Zip(expected).All(t => Math.Abs(t.First.X - t.Second.Item1) < 0.0015 && Math.Abs(t.First.Z - t.Second.Item2) < 0.0015));
+    // G42 left on makes no difference: threading runs the tool as a sharp point.
+    Check("G42 left active doesn't offset a threading cycle (zero nose radius assumed)", Passes("G42\n").SequenceEqual(passes));
+}
+
 Console.WriteLine($"===== TOTAL: {pass} passed, {fail} failed =====");
 Environment.Exit(fail == 0 ? 0 : 1);

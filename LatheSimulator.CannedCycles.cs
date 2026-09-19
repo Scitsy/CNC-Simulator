@@ -14,6 +14,9 @@ namespace FanucSimulator
         private int _threadFinishPasses = 1;
         private double _threadTipAngle = 60;
         private double _threadMinDepthOfCut = 0.02;
+        // First-block R: the finishing allowance. Roughing stops this far short of full depth; the
+        // finishing passes take the rest.
+        private double _threadFinishAllowance = 0;
 
         // A system-A single cycle (G90/G92/G94) keeps its own coordinates modal: once armed, a block
         // giving only a new X repeats the cycle at that depth with the previously commanded Z and
@@ -69,6 +72,8 @@ namespace FanucSimulator
             }
             if (block.Params.TryGetValue("Q", out var qRaw))
                 _threadMinDepthOfCut = Math.Max(0.005, IncrementToMm(Math.Abs(qRaw)));
+            if (block.Params.TryGetValue("R", out var rFinish))
+                _threadFinishAllowance = Math.Abs(ToMm(rFinish));
 
             Messages.Add($"G76: Threading cycle setup, {_threadFinishPasses} finish pass(es), {_threadTipAngle:F0}deg tip, min depth {Len(_threadMinDepthOfCut)}{LenUnit}");
         }
@@ -264,7 +269,8 @@ namespace FanucSimulator
 
             var startX = X;
             var startZ = Z;
-            var depths = BuildThreadDepthSchedule(threadHeight, firstCutDepth, _threadMinDepthOfCut, _threadFinishPasses);
+            var roughTo = Math.Max(0, threadHeight - _threadFinishAllowance);
+            var depths = BuildThreadDepthSchedule(roughTo, threadHeight, firstCutDepth, _threadMinDepthOfCut, _threadFinishPasses, IncrementToMm(1));
 
             Messages.Add($"G76: Threading cycle, {depths.Count} pass(es), thread height {Len(threadHeight)}{LenUnit}, lead {Len(lead)}{LenUnit}/rev");
 
@@ -275,6 +281,16 @@ namespace FanucSimulator
                 var passStartX = startX - 2 * depth;
                 var passEndX = passStartX - 2 * taper;
 
+                // Flank infeed, FANUC's standard G76 cutting method: each pass cuts along one flank
+                // of the thread, so a shallower pass starts further along the thread by
+                // (height - depth) x tan(half the tip angle), and the passes at full depth start back
+                // at the start Z. (Checked against CIMCO Edit's Backplot: O0005's first pass, 0.3 of
+                // 1.1 deep at 60 degrees, starts 0.8 x tan30 = 0.462 in - exactly.) Straight radial
+                // infeed, as this cycle once did, cuts on both flanks at once.
+                // The finishing passes stay on the last roughing pass's flank position.
+                var flankDepth = Math.Min(depth, roughTo);
+                var passZ = startZ + Math.Sign(targetZ - startZ) * (threadHeight - flankDepth) * Math.Tan(_threadTipAngle / 2 * Math.PI / 180);
+
                 // Reposition to startZ at the fully-clear startX first (single-axis rapid, matches
                 // the safe retract already used below), then engage the pass depth at the now-fixed
                 // startZ. That infeed is a FEED move, not a rapid - it's the tool's edge cutting into
@@ -282,9 +298,9 @@ namespace FanucSimulator
                 // traverse. Modeling it as a rapid (the original shape of this cycle) meant a real
                 // cutting action was invisible to material removal and would misread as a collision
                 // now that stock-aware checks exist.
-                if (!TryMoveTo(startX, startZ, rapid: true))
+                if (!TryMoveTo(startX, passZ, rapid: true))
                     return;
-                if (!TryMoveTo(passStartX, startZ, rapid: false))
+                if (!TryMoveTo(passStartX, passZ, rapid: false))
                     return;
                 if (!TryMoveTo(passEndX, targetZ, rapid: false))
                     return;
@@ -305,25 +321,25 @@ namespace FanucSimulator
         // shrinking increment would fall below the programmed minimum depth of cut, remaining passes
         // step by that minimum instead. Finishing/spring passes repeat at the full thread height with
         // no further infeed.
-        private static List<double> BuildThreadDepthSchedule(double height, double firstCutDepth, double minDepthOfCut, int finishPasses)
+        // Roughs down to `roughTo` (the thread height less the finishing allowance), then the
+        // finishing passes at the full height. Each depth is rounded to the control's least increment,
+        // as the control's own arithmetic is (CIMCO shows O0005's second pass at 0.424, not 0.4243).
+        private static List<double> BuildThreadDepthSchedule(double roughTo, double height, double firstCutDepth, double minDepthOfCut, int finishPasses, double increment)
         {
             var depths = new List<double>();
             if (firstCutDepth < 1e-6)
                 firstCutDepth = minDepthOfCut;
+            double Round(double v) => increment > 0 ? Math.Round(v / increment) * increment : v;
 
             double cumulative = 0;
             int n = 1;
-            while (cumulative < height - 1e-9 && depths.Count < 200)
+            while (cumulative < roughTo - 1e-9 && depths.Count < 200)
             {
-                var nextCumulative = firstCutDepth * Math.Sqrt(n);
-                var increment = nextCumulative - cumulative;
-                if (increment < minDepthOfCut)
-                {
-                    increment = minDepthOfCut;
-                    nextCumulative = cumulative + increment;
-                }
-                if (nextCumulative >= height)
-                    nextCumulative = height;
+                var nextCumulative = Round(firstCutDepth * Math.Sqrt(n));
+                if (nextCumulative - cumulative < minDepthOfCut)
+                    nextCumulative = Round(cumulative + minDepthOfCut);
+                if (nextCumulative >= roughTo)
+                    nextCumulative = roughTo;
 
                 depths.Add(nextCumulative);
                 cumulative = nextCumulative;

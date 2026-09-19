@@ -1422,7 +1422,11 @@ namespace FanucSimulator
             // rather than a constant X-only shift - so angled cuts compensate correctly too.
             // Assumes a front tool post; doesn't model the 9 imaginary tool-nose-direction vectors
             // real controls use for rear-mounted or unusual tool orientations.
-            var compActive = Modal.Comp != CutterComp.Off && offset.NoseRadius != 0 && hasDirection;
+            // Never while threading: G32/G92/G76 run the tool as a sharp point (zero nose radius) -
+            // allowing for the nose is the programmer's own arithmetic, as on the machine (per its
+            // owner, 2026-09-18). Every threading cycle requires a threading tool.
+            var compActive = Modal.Comp != CutterComp.Off && offset.NoseRadius != 0 && hasDirection
+                             && offset.Type != ToolType.Threading;
             var (compRx, compDz) = compActive ? ComputeCompOffset(ndx, ndz, offset.NoseRadius, Modal.Comp) : (0, 0);
             var compDx = compRx * 2; // back to a diameter, like everything else in X
 
