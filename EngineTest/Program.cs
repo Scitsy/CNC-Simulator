@@ -1996,5 +1996,32 @@ Console.WriteLine();
     Check("metric G75 P1000 pecks 1mm per side: X40 -> X38", Math.Abs(metricPeck.ToX - 38) < 1e-9);
 }
 
+// ---- [92] G71 passes: stepped from the start point, cutting only where material is left ----
+{
+    Console.WriteLine("[92] G71 roughing: passes step in from the start X, and never re-trace finished stretches");
+    // O0003's roughing: start X52 Z2, U2 (2mm per side = 4 on X), finish allowance U0.5 W0.1. The
+    // shape holds X40 to Z-25, runs down an R10 arc to X30, then steps to X24 - a recess.
+    var sim = new LatheSimulator { StockDiameter = 50, StockLength = 80 };
+    sim.ResetStockProfile();
+    sim.RunProgram(new GCodeParser().Parse(
+        "G21\nG99\nT0101\nM03 S800\nG00 X52 Z2\nG71 U2 R1\nG71 P10 Q80 U0.5 W0.1 F0.25\n" +
+        "N10 G00 X40 Z2\nN20 G01 Z-5 F0.15\nN30 X40 Z-25\nN40 G02 X30 Z-35 R10\nN50 G01 Z-50\nN60 X24 Z-50\nN70 Z-65\nN80 X50 Z-65\nM30\n"));
+    var cuts = sim.LastTimeline!.Events
+        .Where(e => e.Kind == TimelineEventKind.Feed && e.Line == 7 && Math.Abs(e.FromX - e.ToX) < 1e-9 && Math.Abs(e.FromZ - e.ToZ) > 0.2)
+        .ToList();
+    var levels = cuts.Select(e => Math.Round(e.ToX, 3)).Distinct().OrderByDescending(x => x).ToList();
+    // As on the Leadwell: first pass at the start X less one depth (52 - 4 = 48), then 4 at a time,
+    // then the finish allowance - 24 + 0.5. X40.5 is the X40 pass riding the finished shape.
+    Check($"pass levels step in from the start: {string.Join(", ", levels)}",
+        levels.SequenceEqual(new[] { 48.0, 44.0, 40.5, 40.0, 36.0, 32.0, 30.5, 28.0, 24.5 }));
+    // The X40 stretch (Z2 to Z-25, finished at X40.5) is cut once, then left alone: the old passes
+    // traced it again on every pass below it, in air.
+    var overFinished = cuts.Count(e => Math.Abs(e.ToX - 40.5) < 1e-9 && e.ToZ > -25);
+    Check($"the finished X40 stretch is cut once, not re-traced ({overFinished} cut(s) at X40.5 over Z0..-25)", overFinished == 2);
+    Check("passes below X40 start at the arc, never back at the face",
+        cuts.Where(e => e.ToX < 40 - 1e-9).All(e => Math.Max(e.FromZ, e.ToZ) < -25));
+    Check("no alarms", sim.Alarms.Count == 0);
+}
+
 Console.WriteLine($"===== TOTAL: {pass} passed, {fail} failed =====");
 Environment.Exit(fail == 0 ? 0 : 1);

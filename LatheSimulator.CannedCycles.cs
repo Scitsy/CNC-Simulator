@@ -694,80 +694,158 @@ namespace FanucSimulator
         }
 
         // Shared by G71 (primary axis = X, stepping toward the finish diameter) and G72 (primary
-        // axis = Z, stepping toward the finish face) - both assume external turning (stock outside
-        // the finish contour) and a monotonic contour on the walking axis.
+        // axis = Z, stepping toward the finish face).
+        //
+        // As on the Leadwell (per its owner, 2026-09-18): the passes step in from the cycle's start
+        // point - the first at start minus one depth of cut, then one depth at a time, down to the
+        // finish shape plus its allowance. Each pass cuts only where there is still material: where
+        // the finish shape lies below the previous pass. There it follows max(pass, shape), so a step
+        // in the shape between two passes is still cut; where the shape is at or above the previous
+        // pass, that stretch is already finished and is skipped rather than re-traced in air (as this
+        // once did on every pass - checked against CIMCO Edit's Backplot). After each stretch the tool
+        // lifts by the retract amount and rapids on, only as high as the shape in between needs.
         private void RunRoughingPasses(List<(double X, double Z)> offsetContour, double feed, bool isFacing, int code)
         {
             (double Primary, double Secondary) ToGeneric((double X, double Z) p) => isFacing ? (p.Z, p.X) : (p.X, p.Z);
             (double X, double Z) FromGeneric(double primary, double secondary) => isFacing ? (secondary, primary) : (primary, secondary);
 
-            var genericContour = offsetContour.Select(ToGeneric).ToList();
-            var startPrimary = genericContour[0].Primary;
-            var minPrimary = genericContour.Min(p => p.Primary);
-
-            if (startPrimary <= minPrimary + 1e-6)
-            {
-                Messages.Add($"G{code}: Nothing to remove - stock already at or inside the finish allowance");
-                return;
-            }
+            var shape = offsetContour.Select(ToGeneric).ToList();
+            var (startPrimary, startSecondary) = ToGeneric((X, Z)); // the cycle's start point, as the tool stands
+            var minPrimary = shape.Skip(1).Min(p => p.Primary);
 
             // G71's depth of cut and retract are per side (radius values), but its stepping axis is the
             // diameter X, so each counts double there. G72 steps in Z, where they apply as they are.
             var stepDepth = isFacing ? _roughingDepth : 2 * _roughingDepth;
             var stepRetract = isFacing ? _roughingRetract : 2 * _roughingRetract;
 
-            var passCount = Math.Max(1, (int)Math.Ceiling((startPrimary - minPrimary) / stepDepth));
-            var approachSecondary = genericContour[0].Secondary;
-
-            // Always fully clear of the ORIGINAL stock (not just the previous pass's own depth) -
-            // safe to reposition across the whole part length at this primary value regardless of
-            // how many passes have run, since nothing has ever been cut wider than startPrimary.
-            var clearPrimary = startPrimary + stepRetract;
-            var currentSecondary = ToGeneric((X, Z)).Secondary;
-
-            for (int pass = 1; pass <= passCount; pass++)
+            if (startPrimary <= minPrimary + 1e-6)
             {
-                var passPrimary = Math.Max(minPrimary, startPrimary - pass * stepDepth);
-                var path = ClampPassPath(genericContour, passPrimary);
-                if (path.Count == 0)
-                    continue;
-
-                // Two single-axis rapids instead of one diagonal shortcut: retract to the clear
-                // primary at the CURRENT secondary first (safe - the prior pass already cleared its
-                // entire traversed span at that position), then reposition to the approach secondary
-                // while still at the clear primary (safe everywhere, for the whole part length).
-                var (retractX, retractZ) = FromGeneric(clearPrimary, currentSecondary);
-                if (!TryMoveTo(retractX, retractZ, rapid: true))
-                    return;
-
-                var (approachX, approachZ) = FromGeneric(clearPrimary, approachSecondary);
-                if (!TryMoveTo(approachX, approachZ, rapid: true))
-                    return;
-
-                SetFeedRate(feed);
-                foreach (var (primary, secondary) in path)
-                {
-                    var (px, pz) = FromGeneric(primary, secondary);
-                    if (!TryMoveTo(px, pz, rapid: false))
-                        return;
-                }
-
-                currentSecondary = path[^1].Secondary;
-                Messages.Add($"  Pass {pass}/{passCount}: depth {Len(passPrimary)}{LenUnit}");
+                Messages.Add($"G{code}: Nothing to remove - start point already at or inside the finish allowance");
+                return;
             }
 
-            // Return to the exact original diameter (matching pre-fix behavior, so G70 finishing
-            // starts from the same place it always has), reached via the same safe two-leg pattern.
-            var (finalClearX, finalClearZ) = FromGeneric(clearPrimary, currentSecondary);
-            if (!TryMoveTo(finalClearX, finalClearZ, rapid: true))
+            var levels = new List<double>();
+            for (var level = startPrimary - stepDepth; level > minPrimary + 1e-9; level -= stepDepth)
+                levels.Add(level);
+            levels.Add(minPrimary);
+            var passCount = levels.Count;
+
+            // The highest the shape reaches strictly between two points along it - how high a rapid
+            // across has to be. Strictly between: a face standing right at either end (the wall the
+            // tool has just lifted off, say) is beside the tool, not in its way. The start point is
+            // left out: it is only where the cycle begins, not part of the shape.
+            double HighestBetween(double s1, double s2)
+            {
+                var (lo, hi) = (Math.Min(s1, s2) + 1e-6, Math.Max(s1, s2) - 1e-6);
+                var highest = double.NegativeInfinity;
+                if (hi <= lo)
+                    return highest;
+                for (int i = 2; i < shape.Count; i++)
+                {
+                    var (a, b) = (shape[i - 1], shape[i]);
+                    foreach (var v in new[] { a, b })
+                        if (v.Secondary > lo && v.Secondary < hi)
+                            highest = Math.Max(highest, v.Primary);
+                    foreach (var s in new[] { lo, hi })
+                        if ((a.Secondary - s) * (b.Secondary - s) < 0)
+                            highest = Math.Max(highest, a.Primary + (s - a.Secondary) / (b.Secondary - a.Secondary) * (b.Primary - a.Primary));
+                }
+                return highest;
+            }
+
+            var (curP, curS) = (startPrimary, startSecondary);
+            bool Move(double primary, double secondary, bool rapid)
+            {
+                var (x, z) = FromGeneric(primary, secondary);
+                if (!TryMoveTo(x, z, rapid))
+                    return false;
+                (curP, curS) = (primary, secondary);
+                return true;
+            }
+            // Rapid to `secondary`, first rising clear of whatever lies in between.
+            bool TravelTo(double secondary, double atLeast)
+            {
+                var level = Math.Max(Math.Max(curP, atLeast), HighestBetween(curS, secondary) + stepRetract);
+                if (level > curP + 1e-9 && !Move(level, curS, rapid: true))
+                    return false;
+                return Math.Abs(secondary - curS) < 1e-9 || Move(level, secondary, rapid: true);
+            }
+
+            var previous = startPrimary;
+            for (int pass = 0; pass < levels.Count; pass++)
+            {
+                var level = levels[pass];
+                foreach (var stretch in StretchesBelow(shape, previous))
+                {
+                    var path = ClampPassPath(stretch, level);
+                    if (path.Count < 2)
+                        continue;
+
+                    if (!TravelTo(path[0].Secondary, previous + stepRetract))
+                        return;
+                    // Down to just above the last pass at rapid - everything there is already cut -
+                    // then feed in.
+                    if (curP > previous + stepRetract + 1e-9 && !Move(previous + stepRetract, curS, rapid: true))
+                        return;
+                    if (!Move(path[0].Primary, path[0].Secondary, rapid: false))
+                        return;
+                    SetFeedRate(feed);
+                    for (int k = 1; k < path.Count; k++)
+                        if (!Move(path[k].Primary, path[k].Secondary, rapid: false))
+                            return;
+                    if (!Move(curP + stepRetract, curS, rapid: false)) // lift off by the retract amount
+                        return;
+                }
+                Messages.Add($"  Pass {pass + 1}/{passCount}: depth {Len(level)}{LenUnit}");
+                previous = level;
+            }
+
+            // Back to the cycle's start point, where G70 (or whatever follows) expects the tool.
+            if (!TravelTo(startSecondary, startPrimary))
                 return;
-            var (finalApproachX, finalApproachZ) = FromGeneric(clearPrimary, approachSecondary);
-            if (!TryMoveTo(finalApproachX, finalApproachZ, rapid: true))
-                return;
-            var (finalX, finalZ) = FromGeneric(startPrimary, approachSecondary);
-            TryMoveTo(finalX, finalZ, rapid: true);
+            Move(startPrimary, startSecondary, rapid: true);
 
             Messages.Add($"G{code}: Roughing complete, {passCount} passes");
+        }
+
+        // The stretches of the shape that lie below `level`, each cut off where the shape crosses it:
+        // where a pass at or under that level still has material to remove.
+        private static List<List<(double Primary, double Secondary)>> StretchesBelow(
+            List<(double Primary, double Secondary)> shape, double level)
+        {
+            var stretches = new List<List<(double Primary, double Secondary)>>();
+            List<(double Primary, double Secondary)>? current = null;
+            for (int i = 0; i < shape.Count; i++)
+            {
+                var p = shape[i];
+                var below = p.Primary < level - 1e-9;
+                if (i > 0)
+                {
+                    var q = shape[i - 1];
+                    var wasBelow = q.Primary < level - 1e-9;
+                    if (below != wasBelow && Math.Abs(p.Primary - q.Primary) > 1e-12)
+                    {
+                        var t = (level - q.Primary) / (p.Primary - q.Primary);
+                        var cross = (level, q.Secondary + t * (p.Secondary - q.Secondary));
+                        if (below)
+                            current = new List<(double, double)> { cross };
+                        else if (current != null)
+                        {
+                            current.Add(cross);
+                            stretches.Add(current);
+                            current = null;
+                        }
+                    }
+                }
+                if (below)
+                {
+                    current ??= new List<(double, double)>();
+                    current.Add(p);
+                }
+            }
+            if (current != null && current.Count > 1)
+                stretches.Add(current);
+            return stretches;
         }
     }
 }
