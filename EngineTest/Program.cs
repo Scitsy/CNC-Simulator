@@ -1,5 +1,10 @@
 ﻿using FanucSimulator;
 
+// The suite's programs are written "pocket calculator" style (X30 meaning 30.0), as they were
+// before the decimal-point rule existed. The owner's machine reads X30 as X0.0030 (parameter 3401
+// bit 0 = 0); that rule has its own checks ([96]), and the demo programs are written for it.
+LatheSimulator.DefaultCalculatorDecimalInput = true;
+
 int pass = 0, fail = 0;
 void Check(string label, bool condition)
 {
@@ -1011,7 +1016,8 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
     Check("G04 P500 -> exactly 0.5s", Math.Abs(sim.SimulatedSecondsElapsed - 0.5) < 0.001);
 
     var sim2 = new LatheSimulator();
-    var alarmsX = RunFull(sim2, new GCodeParser().Parse("G21\nT0101\nG04 X2\nM30\n"), out _);
+    // Under G98: under G99 (the power-on mode) X counts spindle revolutions instead - see [96].
+    var alarmsX = RunFull(sim2, new GCodeParser().Parse("G21\nG98\nT0101\nG04 X2\nM30\n"), out _);
     Check("no alarms (X form)", alarmsX.Count == 0);
     Check("G04 X2 -> exactly 2.0s", Math.Abs(sim2.SimulatedSecondsElapsed - 2.0) < 0.001);
 }
@@ -2100,6 +2106,49 @@ Console.WriteLine();
     var sub = new LatheSimulator();
     sub.RunProgram(new GCodeParser().Parse("G21\nT0101\nG00 X20 Z5\nM98 P1000\nM30\nO1000\nG00 X40 M99\n"));
     Check("M99 on a moving line: the move is made before returning (ended at X40)", Math.Abs(sub.X - 40) < 1e-9);
+}
+
+// ---- [96] The machine's decimal-point rule (parameter 3401#0 = 0), and dwell in revolutions ----
+{
+    Console.WriteLine("[96] No decimal point = least input increment (the owner's machine); G04 X under G99 = revs");
+    LatheSimulator Machine(string program)
+    {
+        var s = new LatheSimulator { CalculatorDecimalInput = false, SpindleRampSeconds = 0 };
+        s.RunProgram(new GCodeParser().Parse(program));
+        return s;
+    }
+    // X1 in inch goes to 0.0001in and does not alarm; X1. goes to 1.0000in.
+    var x1 = Machine("G20\nT0101\nG00 X1\nM30\n");
+    Check("G20 X1 (no decimal point) goes to X0.0001in, without an alarm",
+        Math.Abs(x1.X - 0.0001 * 25.4) < 1e-9 && x1.Alarms.Count == 0);
+    Check("G20 X1. goes to X1.0000in", Math.Abs(Machine("G20\nT0101\nG00 X1.\nM30\n").X - 25.4) < 1e-9);
+    Check("G21 X30 (no decimal point) goes to X0.030mm", Math.Abs(Machine("G21\nT0101\nG00 X30\nM30\n").X - 0.030) < 1e-9);
+    // The owner's example: F1 under G99 is 0.0001 per rev, F1. is 1.0000.
+    Check("G99 F1 (no decimal point) is 0.0001in/rev",
+        Math.Abs(Machine("G20\nG99\nT0101\nG01 F1\nM30\n").FeedRate - 0.0001 * 25.4) < 1e-12);
+    Check("G99 F1. is 1.0000in/rev", Math.Abs(Machine("G20\nG99\nT0101\nG01 F1.\nM30\n").FeedRate - 25.4) < 1e-9);
+    // A macro variable carries its decimal point: #1=10 then X#1 is X10.0, not X0.0010.
+    Check("#1=10 then G00 X#1 goes to X10.0 (a variable is never 'without a decimal point')",
+        Math.Abs(Machine("G21\nT0101\n#1=10\nG00 X#1\nM30\n").X - 10) < 1e-9);
+    Check("...while a plain X10 on a macro line is still the least increment",
+        Math.Abs(Machine("G21\nT0101\n#1=10\nG00 X10 Z#1\nM30\n").X - 0.010) < 1e-9);
+    // The G71 shape blocks follow the same rule.
+    var rough = new LatheSimulator { CalculatorDecimalInput = false, StockDiameter = 50, StockLength = 60 };
+    rough.ResetStockProfile();
+    rough.RunProgram(new GCodeParser().Parse(
+        "G21\nG99\nT0101\nM03 S1000\nG00 X52. Z2.\nG71 U2. R1.\nG71 P10 Q20 U0 W0 F0.2\nN10 G00 X30.\nN20 G01 Z-20.\nM30\n"));
+    Check("a G71 written with decimal points roughs to X30 as expected",
+        Math.Abs(rough.Stock.OuterX[NearestIndex(rough.Stock, -10)] - 30) < 0.01);
+
+    // Dwell (owner, 2026-09-18): X/U is seconds under G98 but spindle revolutions under G99.
+    var rev = Machine("G21\nG99\nT0101\nM03 S600\nG04 X2.\nM30\n");
+    Check("G99 G04 X2. at 600 RPM dwells 2 revolutions = 0.2s", Math.Abs(rev.SimulatedSecondsElapsed - 0.2) < 1e-9);
+    var sec = Machine("G21\nG98\nT0101\nM03 S600\nG04 X2.\nM30\n");
+    Check("G98 G04 X2. dwells 2 seconds", Math.Abs(sec.SimulatedSecondsElapsed - 2.0) < 1e-9);
+    Check("G04 P1500 is 1.5s in either mode", Math.Abs(Machine("G21\nG99\nT0101\nM03 S600\nG04 P1500\nM30\n").SimulatedSecondsElapsed - 1.5) < 1e-9);
+    var stopped = Machine("G21\nG99\nT0101\nG04 U2.5\nM30\n");
+    Check("G99 dwell in revolutions with the spindle stopped is flagged (it would never end)",
+        stopped.Warnings.Any(w => w.Contains("never end")));
 }
 
 Console.WriteLine($"===== TOTAL: {pass} passed, {fail} failed =====");

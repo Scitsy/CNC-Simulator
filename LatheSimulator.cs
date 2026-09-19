@@ -495,9 +495,9 @@ namespace FanucSimulator
 
                 // A plain block - either always was one, or is a macro-syntax "None" kind (variables
                 // inside an ordinary motion/G-code line) that needs substituting into one first.
-                var toExecute = block.HasMacroSyntax
+                var toExecute = ApplyDecimalPointRule(block.HasMacroSyntax
                     ? new GCodeParser().ParseLine(SubstituteExpressions(block.RawCode), block.Line)
-                    : block;
+                    : block);
 
                 if (toExecute.Commands.Any(c => c.Type == 'M' && c.Code == 98))
                 {
@@ -1115,12 +1115,29 @@ namespace FanucSimulator
                 Spindle.Advance(ms / 1000.0, SpindleTargetRpm);
                 Messages.Add($"G04: Dwell {ms:F0} ms");
             }
-            else if (block.Params.TryGetValue("X", out var sec))
+            else if (block.Params.TryGetValue("X", out var amount) || block.Params.TryGetValue("U", out amount))
             {
+                // X/U is seconds under G98 but spindle revolutions under G99 (per the owner,
+                // 2026-09-18) - the dwell follows the feed mode, like the feed does.
+                double sec;
+                if (Modal.Feed == FeedMode.PerRevolution)
+                {
+                    sec = Spindle.SecondsForRevolutions(amount, SpindleTargetRpm);
+                    if (double.IsInfinity(sec))
+                    {
+                        Warnings.Add($"G04: Dwell of {amount:0.###} revolutions with the spindle stopped - it would never end");
+                        sec = 0;
+                    }
+                    Messages.Add($"G04: Dwell {amount:0.###} rev ({sec:F2} sec)");
+                }
+                else
+                {
+                    sec = amount;
+                    Messages.Add($"G04: Dwell {sec:F2} sec");
+                }
                 SimulatedSecondsElapsed += sec;
                 RecordDwell(sec);
                 Spindle.Advance(sec, SpindleTargetRpm);
-                Messages.Add($"G04: Dwell {sec:F2} sec");
             }
             else
                 Messages.Add("G04: Dwell");
@@ -1161,9 +1178,15 @@ namespace FanucSimulator
 
         private void ApplyMotion(GCodeParser.Block block)
         {
+            // F is modal: it takes effect on its own line whether or not the line moves ("G01 F0.2"
+            // alone sets the feed for what follows). It used to be dropped unless the line moved.
             var (targetX, targetZ, hasMotion) = ResolveTargetXZ(X, Z, block);
             if (!hasMotion)
+            {
+                if (block.Params.TryGetValue("Feed", out var modalFeed))
+                    SetFeedRate(modalFeed);
                 return;
+            }
 
             // A new F-word takes effect for this same block's own move on a real control - must be
             // applied before the move happens, not after, or the cycle-time calculation (and a real
@@ -1865,6 +1888,50 @@ namespace FanucSimulator
         // Public so the UI can convert operator-entered values (stock size) the same way the engine
         // converts programmed ones, rather than keeping a second copy of the 25.4 constant.
         public double ToMm(double value) => Modal.Units == UnitsMode.Inch ? value * InchToMm : value;
+
+        // Parameter 3401 bit 0 (DPI). 0 - the owner's machine: a number written without a decimal
+        // point counts in the least input increment, so X30 is X0.0030 in inch (0.030 mm in metric)
+        // and F1 under G99 is 0.0001 per rev - and the control does not alarm. A dropped decimal point
+        // is a classic crash, and the simulator used to hide it by reading X30 as X30.0. 1 - "pocket
+        // calculator" input, where X30 means 30.0.
+        public bool CalculatorDecimalInput { get; set; } = DefaultCalculatorDecimalInput;
+
+        // What a new simulator starts with. The engine's own test suite writes its programs
+        // calculator-style and sets this once; everything else gets the machine's behaviour.
+        public static bool DefaultCalculatorDecimalInput { get; set; }
+
+        // Dimension words, and F under feed per rev (or a thread lead): scaled by the least input
+        // increment when written without a decimal point. P and Q in the cycles already count in
+        // increments (IncrementToMm); N, O, P, L, S, T, M and G65 arguments are not dimensions.
+        private static readonly string[] DimensionWords = { "X", "Z", "Y", "U", "W", "I", "K", "R" };
+
+        private GCodeParser.Block ApplyDecimalPointRule(GCodeParser.Block block)
+        {
+            if (CalculatorDecimalInput || block.WithoutDecimalPoint.Count == 0)
+                return block;
+
+            // The block's own G20/G21/G98/G99 decide its units, as the block acts as a whole.
+            bool Has(int g) => block.Commands.Any(c => c.Type == 'G' && c.Code == g);
+            var inch = Has(20) || (!Has(21) && Modal.Units == UnitsMode.Inch);
+            var increment = inch ? 0.0001 : 0.001;
+            var perRev = Has(99) || (!Has(98) && Modal.Feed == FeedMode.PerRevolution)
+                         || Has(32) || Has(33) || Has(76) || Has(92);
+            var isDwell = Has(4);
+
+            var scaled = block.Clone();
+            foreach (var key in block.WithoutDecimalPoint)
+            {
+                if (!scaled.Params.TryGetValue(key, out var v))
+                    continue;
+                if (isDwell && (key == "X" || key == "U"))
+                    scaled.Params[key] = v * 0.001; // a dwell counts in thousandths (of a second, or of a rev)
+                else if (Array.IndexOf(DimensionWords, key) >= 0)
+                    scaled.Params[key] = v * increment;
+                else if (key == "Feed" && perRev)
+                    scaled.Params[key] = v * 0.0001 * (inch ? 1 : 10);
+            }
+            return scaled;
+        }
 
         // The multiple repetitive cycles' unsigned P and Q words (G74/G75 pecks and steps, G76 thread
         // height and depths) take no decimal point: they count in the least input increment, which is

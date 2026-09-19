@@ -521,7 +521,7 @@ namespace FanucSimulator
             double cursorX = X, cursorZ = Z;
             for (int idx = startIdx; idx <= endIdx; idx++)
             {
-                var block = blocks[idx];
+                var block = ApplyDecimalPointRule(blocks[idx]);
                 var (tx, tz, hasMotion) = ResolveTargetXZ(cursorX, cursorZ, block);
                 if (!hasMotion)
                     continue;

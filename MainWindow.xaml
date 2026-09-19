@@ -575,7 +575,7 @@
                                         BorderBrush="{StaticResource ScreenBorder}" CaretBrush="White" SelectionBrush="#a8e8ff"
                                         TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
                                         AcceptsReturn="True" AcceptsTab="True" GotFocus="Input_GotFocus" TextChanged="GCodeInput_TextChanged"
-                                        Text="G21&#xD;&#xA;G54&#xD;&#xA;T0101 M6&#xD;&#xA;G97 S1200 M3&#xD;&#xA;G0 X50 Z100&#xD;&#xA;G99 G1 Z50 F0.2&#xD;&#xA;G4 P300&#xD;&#xA;M8&#xD;&#xA;G0 Z100&#xD;&#xA;M9&#xD;&#xA;G28&#xD;&#xA;M5&#xD;&#xA;M30"/>
+                                        Text="G21&#xD;&#xA;G54&#xD;&#xA;T0101 M6&#xD;&#xA;G97 S1200 M3&#xD;&#xA;G0 X50. Z100.&#xD;&#xA;G99 G1 Z50. F0.2&#xD;&#xA;G4 P300&#xD;&#xA;M8&#xD;&#xA;G0 Z100.&#xD;&#xA;M9&#xD;&#xA;G28&#xD;&#xA;M5&#xD;&#xA;M30"/>
 
                                 <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,5,0,0">
                                     <TextBlock Text="Recent:" Foreground="{StaticResource ScreenMuted}" VerticalAlignment="Center" Margin="0,0,6,0"/>
@@ -751,6 +751,19 @@
                                             ToolTip="1: each cutting move waits until the spindle is up to speed. 0: cutting starts at once, even while the spindle is still accelerating."/>
                                 </Grid>
                                 <TextBlock x:Name="SarParameterNote" TextWrapping="Wrap" Foreground="{StaticResource ScreenMuted}" FontSize="11" Margin="60,0,0,10"/>
+
+                                <Grid Margin="0,0,0,2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="60"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="03401" Foreground="{StaticResource ScreenAxisLabel}" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    <TextBlock Grid.Column="1" Text="#0 DPI  decimal point input" Foreground="{StaticResource ScreenValue}" VerticalAlignment="Center"/>
+                                    <Button Grid.Column="2" x:Name="DpiParameterButton" Content="0" Width="40" Click="DpiParameter_Click" Style="{StaticResource PanelButton}"
+                                            ToolTip="0: a number without a decimal point counts in the least increment (X1 = 0.0001in). 1: calculator style (X1 = 1.0)."/>
+                                </Grid>
+                                <TextBlock x:Name="DpiParameterNote" TextWrapping="Wrap" Foreground="{StaticResource ScreenMuted}" FontSize="11" Margin="60,0,0,10"/>
 
                                 <Grid Margin="0,0,0,2">
                                     <Grid.ColumnDefinitions>

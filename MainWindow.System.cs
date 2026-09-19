@@ -18,6 +18,8 @@ namespace FanucSimulator
             public bool SpindleSpeedArrivalCheck { get; set; } = true;
             public double SpindleRampSeconds { get; set; } = MachineSpec.SpindleRampSecondsTypical;
             public double RapidF0MmPerMin { get; set; } = MachineSpec.RapidF0PlaceholderMmPerMin;
+            // 3401#0 DPI. 0 (false), as on the owner's machine: no decimal point = least increment.
+            public bool CalculatorDecimalInput { get; set; }
         }
 
         private static readonly string ParametersPath = IOPath.Combine(
@@ -58,6 +60,7 @@ namespace FanucSimulator
                 return;
             _sim.SpindleSpeedArrivalCheck = _parameters.SpindleSpeedArrivalCheck;
             _sim.SpindleRampSeconds = _parameters.SpindleRampSeconds;
+            _sim.CalculatorDecimalInput = _parameters.CalculatorDecimalInput;
         }
 
         private void RefreshSystemScreen()
@@ -68,6 +71,21 @@ namespace FanucSimulator
                 : "0: cutting starts at once, even while the spindle is still speeding up - the start of those cuts is rougher.";
             SpindleRampInput.Text = _parameters.SpindleRampSeconds.ToString("0.0#");
             RapidF0Input.Text = _parameters.RapidF0MmPerMin.ToString("0");
+            DpiParameterButton.Content = _parameters.CalculatorDecimalInput ? "1" : "0";
+            DpiParameterNote.Text = _parameters.CalculatorDecimalInput
+                ? "1: calculator style - X30 means X30.0. Not how this machine is set."
+                : "0: as this machine is set - a number without a decimal point counts in the least increment: X30 is X0.0030 in inch (0.030 mm in metric), F1 under G99 is 0.0001/rev. No alarm - a dropped decimal point just goes somewhere very small.";
+        }
+
+        private void DpiParameter_Click(object sender, RoutedEventArgs e)
+        {
+            if (RefuseInCycle("Changing parameters"))
+                return;
+            _parameters.CalculatorDecimalInput = !_parameters.CalculatorDecimalInput;
+            ApplyMachineParameters();
+            SaveMachineParameters();
+            RefreshSystemScreen();
+            Log($"Parameter 3401#0 DPI = {(_parameters.CalculatorDecimalInput ? 1 : 0)}", "info");
         }
 
         private void RapidF0Input_KeyDown(object sender, KeyEventArgs e)

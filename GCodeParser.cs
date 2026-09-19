@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Text.RegularExpressions;
 
 namespace FanucSimulator
@@ -48,6 +48,26 @@ namespace FanucSimulator
             // a block-delete line always ran - worse than not supporting it, because the program
             // looked like it was being honoured.
             public bool IsBlockDelete { get; set; }
+
+            // Which Params were written without a decimal point ("X30" rather than "X30."). On the
+            // control that matters: without one, a number counts in the least input increment (see
+            // LatheSimulator.ApplyDecimalPointRule). Keyed like Params ("Feed" for F).
+            public HashSet<string> WithoutDecimalPoint { get; set; } = new();
+
+            // A copy whose Params can be changed without touching the parsed program (which is
+            // re-run from the top on every CYCLE START).
+            public Block Clone() => new()
+            {
+                Line = Line,
+                RawCode = RawCode,
+                Commands = new List<(char Type, int Code)>(Commands),
+                ExtendedCodes = new List<string>(ExtendedCodes),
+                Params = new Dictionary<string, double>(Params),
+                HasMacroSyntax = HasMacroSyntax,
+                MacroKind = MacroKind,
+                IsBlockDelete = IsBlockDelete,
+                WithoutDecimalPoint = new HashSet<string>(WithoutDecimalPoint),
+            };
         }
 
         // \bEND\b alone wouldn't match "END1" - digits are word characters too, so there's no
@@ -165,6 +185,8 @@ namespace FanucSimulator
                 var letter = match.Groups[1].Value.ToUpperInvariant();
                 if (!double.TryParse(match.Groups[2].Value, out var value))
                     continue;
+                if (!match.Groups[2].Value.Contains('.'))
+                    block.WithoutDecimalPoint.Add(letter == "F" ? "Feed" : letter == "S" ? "Speed" : letter);
 
                 if (letter == "G" || letter == "M")
                 {

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
@@ -133,6 +133,8 @@ namespace FanucSimulator
         }
 
         private static string FormatNumber(double value) => value.ToString("0.######", CultureInfo.InvariantCulture);
+
+        private static string FormatWithDecimalPoint(double value) => value.ToString("0.0#####", CultureInfo.InvariantCulture);
 
         // ---- Variable display (for the MACRO screen) ----
 
@@ -416,7 +418,13 @@ namespace FanucSimulator
                     {
                         var cursor = new ExprCursor(code) { Pos = j };
                         var value = ParseFactor(cursor);
-                        sb.Append(FormatNumber(value));
+                        // A plain number keeps its own text, decimal point or not (X10 stays the least-
+                        // increment X10). A variable or expression always carries a decimal point, as a
+                        // macro value does on the control: #1=10 then X#1 is X10.0, not X0.0010.
+                        var literal = code.Substring(j, cursor.Pos - j).Trim();
+                        sb.Append(System.Text.RegularExpressions.Regex.IsMatch(literal, @"^[+-]?(\d+\.?\d*|\.\d+)$")
+                            ? literal
+                            : FormatWithDecimalPoint(value));
                         i = cursor.Pos;
                     }
                 }
