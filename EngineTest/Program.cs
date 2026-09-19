@@ -2079,5 +2079,28 @@ Console.WriteLine();
         Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -10)] - 30) < 1e-6);
 }
 
+// ---- [95] A block acts at its end (EOB): the move first, then its M codes ----
+{
+    Console.WriteLine("[95] M codes on a moving block take effect at the end of the block");
+    // The machine owner's example: "M03 S1000; G0 Z1. M8;" - the coolant comes on at Z1.
+    var sim = new LatheSimulator();
+    sim.RunProgram(new GCodeParser().Parse("G21\nT0101\nM03 S1000\nG00 X50 Z10\nG00 Z1 M08\nG00 X60 M05\nM30\n"));
+    var tl = sim.LastTimeline!;
+    var toZ1 = tl.Events.Single(e => e.Line == 5 && e.Kind == TimelineEventKind.Rapid);
+    Check("G00 Z1 M08: the coolant is still off during the rapid", !toZ1.State.CoolantOn);
+    var next = tl.Events.First(e => e.Line == 6);
+    Check("...and on once it has arrived at Z1", next.State.CoolantOn);
+    Check("G00 X60 M05: the spindle is still running during that move", next.State.SpindleDir == 1);
+    Check("...and stopped after it", sim.SpindleDir == 0);
+    var coolantLine = sim.Messages.FindIndex(m => m.StartsWith("M08"));
+    var rapidLine = sim.Messages.FindIndex(m => m.StartsWith("G00: X") && m.Contains("Z1.000"));
+    Check("the log shows the move before the M08", rapidLine >= 0 && coolantLine > rapidLine);
+
+    // M99 on a line with a move: the move happens, then the return.
+    var sub = new LatheSimulator();
+    sub.RunProgram(new GCodeParser().Parse("G21\nT0101\nG00 X20 Z5\nM98 P1000\nM30\nO1000\nG00 X40 M99\n"));
+    Check("M99 on a moving line: the move is made before returning (ended at X40)", Math.Abs(sub.X - 40) < 1e-9);
+}
+
 Console.WriteLine($"===== TOTAL: {pass} passed, {fail} failed =====");
 Environment.Exit(fail == 0 ? 0 : 1);

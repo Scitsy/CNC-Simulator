@@ -133,7 +133,7 @@ A few worth starting with:
 ## Testing
 
 `EngineTest/` is a headless console harness (source-linked against the same engine files, no test
-framework dependency) with 393 hand-rolled assertions covering every documented G/M-code, both
+framework dependency) with 399 hand-rolled assertions covering every documented G/M-code, both
 canned-cycle directions, macro control flow, geometry checks against several of the demo programs
 above, the catalog-persistence round-trip, and exact closed-form cycle-time checks. Runs
 automatically on every push via GitHub Actions (see the badge at the top of this file).

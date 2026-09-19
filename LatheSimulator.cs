@@ -480,6 +480,9 @@ namespace FanucSimulator
 
                 if (block.Commands.Any(c => c.Type == 'M' && c.Code == 99))
                 {
+                    // Anything else on the line happens first - the return is at the block's end (EOB).
+                    if (block.Commands.Count > 1 || block.Params.Count > 0)
+                        ExecuteBlock(block);
                     Messages.Add("M99: Return from subprogram/macro");
                     return (BlockRangeExit.Returned, i + 1);
                 }
@@ -608,9 +611,19 @@ namespace FanucSimulator
             if (block.Params.ContainsKey("Tool"))
                 SelectTool(block);
 
+            // The block's move first, then its M codes: a block acts at its end (EOB), so
+            // "G00 Z1. M08" turns the coolant on at Z1, not as the rapid starts - as on every machine
+            // the owner has run (2026-09-18). They used to fire before the move.
+            ExecuteBlockMotion(block);
+
             foreach (var (_, code) in block.Commands.Where(c => c.Type == 'M'))
                 ApplyMCode(code, block);
+        }
 
+        // Everything a block does by moving (or dwelling, or presetting): the part that happens
+        // before its M codes take effect.
+        private void ExecuteBlockMotion(GCodeParser.Block block)
+        {
             if (block.Commands.Any(c => c.Type == 'G' && c.Code == 4))
             {
                 ApplyDwell(block);
