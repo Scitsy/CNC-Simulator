@@ -188,7 +188,10 @@ namespace FanucSimulator
 
                 if (result.ProgramEnded)
                 {
-                    _partCount++;
+                    // PART COUNT goes up on M30 only (per the owner, 2026-09-18) - not M02, not a
+                    // program that just runs off its end.
+                    if (result.EndedWithM30)
+                        _partCount++;
                     _programEndLampOn = true;
                 }
 

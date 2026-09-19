@@ -739,7 +739,7 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
 // and would drive the turret straight through the part.
 {
     var sim = new LatheSimulator();
-    var program = "G21\nT0101\nG00 X76.2 Z2\nG01 X60 Z-10 F0.2\nG00 X76.2 Z2\nG28\nM30\n";
+    var program = "G21\nT0101\nM03 S1000\nG00 X76.2 Z2\nG01 X60 Z-10 F0.2\nG00 X76.2 Z2\nG28\nM30\n";
     var alarms = RunFull(sim, new GCodeParser().Parse(program), out var warnings);
     Console.WriteLine("[38] G28 parks at the reference position, clear of the work");
     Check("no alarms", alarms.Count == 0);
@@ -849,7 +849,7 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
     var sim = new LatheSimulator();
     sim.Offsets.GetOrCreateTool(4).Type = ToolType.Drill;
     sim.Offsets.GetOrCreateTool(4).Width = 10;
-    var program = "G21\nT0404\nG00 X0 Z2\nG74 R0.5\nG74 X0 Z-30 Q5000 F0.1\nM30\n";
+    var program = "G21\nT0404\nM03 S1000\nG00 X0 Z2\nG74 R0.5\nG74 X0 Z-30 Q5000 F0.1\nM30\n";
     var alarms = RunFull(sim, new GCodeParser().Parse(program), out var warnings);
     Console.WriteLine("[46] G74 peck drilling cycle bores a straight hole");
     Check("no alarms", alarms.Count == 0);
@@ -2149,6 +2149,51 @@ Console.WriteLine();
     var stopped = Machine("G21\nG99\nT0101\nG04 U2.5\nM30\n");
     Check("G99 dwell in revolutions with the spindle stopped is flagged (it would never end)",
         stopped.Warnings.Any(w => w.Contains("never end")));
+}
+
+// ---- [97] The owner's answers: M00 stops spindle + coolant, G96 changes on feeds only, M30 counts ----
+{
+    Console.WriteLine("[97] M00/M01 stop the spindle and coolant; G96 speed changes only on feeds; parts count on M30");
+    // M00 stops the spindle and coolant; resuming without restarting them cuts with the spindle
+    // stopped, which is flagged.
+    var sim = new LatheSimulator { StockDiameter = 50, StockLength = 60 };
+    sim.ResetStockProfile();
+    var blocks = new GCodeParser().Parse("G21\nG99\nT0101\nM03 S1000\nM08\nG00 X40 Z2\nM00\nG01 Z-20 F0.2\nM30\n");
+    var first = sim.RunProgram(blocks);
+    Check("M00: the spindle is stopped", first.Paused && sim.SpindleDir == 0);
+    Check("M00: the coolant is off", !sim.CoolantOn);
+    sim.RunProgram(blocks, first.NextBlockIndex);
+    Check("cutting after the M00 without an M03 is flagged",
+        sim.Warnings.Any(w => w.StartsWith("CUTTING WITH THE SPINDLE STOPPED")));
+    var restarted = new LatheSimulator { StockDiameter = 50, StockLength = 60 };
+    restarted.ResetStockProfile();
+    var blocks2 = new GCodeParser().Parse("G21\nG99\nT0101\nM03 S1000\nG00 X40 Z2\nM00\nM03\nG01 Z-20 F0.2\nM30\n");
+    var r1 = restarted.RunProgram(blocks2);
+    restarted.RunProgram(blocks2, r1.NextBlockIndex);
+    Check("...and not when the program restarts the spindle (a bare M03 picks up the last S)",
+        !restarted.Warnings.Any() && restarted.SpindleDir == 1 && Math.Abs(restarted.SpindleSpeed - 1000) < 1e-9);
+    // A feed through air with the spindle stopped is not a cut, and not flagged.
+    var air = new LatheSimulator { StockDiameter = 50, StockLength = 60 };
+    air.ResetStockProfile();
+    air.RunProgram(new GCodeParser().Parse("G21\nG98\nT0101\nG00 X60 Z10\nG01 X58 Z5 F200\nM30\n"));
+    Check("a feed move through air with the spindle stopped is not flagged", !air.Warnings.Any());
+
+    // G96: the speed follows the diameter only on feed moves - a rapid leaves it alone.
+    var css = new LatheSimulator { SpindleRampSeconds = 0 };
+    css.RunProgram(new GCodeParser().Parse("G21\nG99\nT0101\nG50 S4000\nG96 S150\nM03\nG00 X100 Z2\nM30\n"));
+    var at100 = css.SpindleSpeed;
+    css.RunProgram(new GCodeParser().Parse("G00 X20\nM30\n"));
+    Check($"G96: a rapid from X100 to X20 leaves the speed where it was ({at100:F0} RPM)", Math.Abs(css.SpindleSpeed - at100) < 1e-9);
+    css.RunProgram(new GCodeParser().Parse("G01 Z-5 F0.1\nM30\n"));
+    Check("...and the next feed takes it to X20's speed (150 m/min: 2387 RPM)",
+        Math.Abs(css.SpindleSpeed - 150 * 1000 / (Math.PI * 20)) < 1);
+
+    // Parts count on M30 only.
+    Check("M30 ends the program and counts a part", new LatheSimulator().RunProgram(new GCodeParser().Parse("G21\nM30\n")).EndedWithM30);
+    var m02 = new LatheSimulator().RunProgram(new GCodeParser().Parse("G21\nM02\n"));
+    Check("M02 ends the program but doesn't count", m02.ProgramEnded && !m02.EndedWithM30);
+    var offEnd = new LatheSimulator().RunProgram(new GCodeParser().Parse("G21\nG00 X10\n"));
+    Check("running off the end doesn't count either", offEnd.ProgramEnded && !offEnd.EndedWithM30);
 }
 
 Console.WriteLine($"===== TOTAL: {pass} passed, {fail} failed =====");

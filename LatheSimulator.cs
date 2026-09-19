@@ -8,6 +8,9 @@ namespace FanucSimulator
     {
         public bool Paused { get; set; }
         public bool ProgramEnded { get; set; }
+        // Ended by M30 specifically - the only end that counts a part on this machine (per its
+        // owner, 2026-09-18); M02 or running off the end of the program don't.
+        public bool EndedWithM30 { get; set; }
         public int NextBlockIndex { get; set; }
     }
 
@@ -399,6 +402,7 @@ namespace FanucSimulator
         public bool OptionalStop { get; set; }
 
         private enum BlockRangeExit { RanOffEnd, Returned, Paused, ProgramEnded }
+        private bool _endedWithM30;
 
         // SBK stops after each block that actually did something. Labels and macro control-flow
         // lines are stepped through rather than stopped on: they command no motion, and stopping on
@@ -430,6 +434,7 @@ namespace FanucSimulator
                 _modalMacroActive = false;
             }
 
+            _endedWithM30 = false;
             var (exit, next) = RunBlockRange(blocks, startIndex, isTopLevel: true);
             FlushCompChain(); // the last cut's end won't be moved now
             if (exit != BlockRangeExit.Paused)
@@ -441,7 +446,7 @@ namespace FanucSimulator
             return exit switch
             {
                 BlockRangeExit.Paused => new RunResult { Paused = true, NextBlockIndex = next },
-                _ => new RunResult { ProgramEnded = true, NextBlockIndex = 0 },
+                _ => new RunResult { ProgramEnded = true, EndedWithM30 = _endedWithM30, NextBlockIndex = 0 },
             };
         }
 
@@ -583,7 +588,10 @@ namespace FanucSimulator
                 // M02 and M30 both end the program; on a real control the difference is only that
                 // M30 rewinds the cursor to the top, which is what the 0 vs i+1 index expresses.
                 if (isTopLevel && toExecute.Commands.Any(c => c.Type == 'M' && c.Code == 30))
+                {
+                    _endedWithM30 = true;
                     return (BlockRangeExit.ProgramEnded, 0);
+                }
 
                 if (isTopLevel && toExecute.Commands.Any(c => c.Type == 'M' && c.Code == 2))
                     return (BlockRangeExit.ProgramEnded, i + 1);
@@ -847,13 +855,18 @@ namespace FanucSimulator
             switch (code)
             {
                 case 0:
-                    Messages.Add("M00: Program stop");
+                    // On this machine a program stop stops the spindle and coolant too (per its
+                    // owner, 2026-09-18) - so the program has to restart them after it.
+                    StopSpindleAndCoolant();
+                    Messages.Add("M00: Program stop - spindle and coolant stopped");
                     break;
                 case 1:
                     // The pause itself is handled by RunBlockRange, which is the only place that
                     // can actually stop the run; this just reports which way the switch is set.
+                    if (OptionalStop)
+                        StopSpindleAndCoolant();
                     Messages.Add(OptionalStop
-                        ? "M01: Optional stop"
+                        ? "M01: Optional stop - spindle and coolant stopped"
                         : "M01: Optional stop (OPT STOP off - ignored)");
                     break;
                 case 3:
@@ -1035,6 +1048,12 @@ namespace FanucSimulator
             return true;
         }
 
+        private void StopSpindleAndCoolant()
+        {
+            SpindleDir = 0;
+            CoolantOn = false;
+        }
+
         private void ApplySpindleSpeedCommand(GCodeParser.Block block)
         {
             if (!block.Params.TryGetValue("Speed", out var speed))
@@ -1200,7 +1219,9 @@ namespace FanucSimulator
             if (!TryMoveTo(targetX, targetZ, rapid: Modal.Motion == MotionMode.Rapid))
                 return;
 
-            if (Modal.Spindle == SpindleMode.ConstantSurfaceSpeed)
+            // Under G96 the spindle only changes speed on feed moves (per the owner, 2026-09-18):
+            // a rapid leaves it where it was, and the next feed takes it to the new diameter's speed.
+            if (Modal.Spindle == SpindleMode.ConstantSurfaceSpeed && Modal.Motion != MotionMode.Rapid)
                 RecalculateCssSpeed();
 
             var moveType = Modal.Motion == MotionMode.Rapid ? "G00" : "G01";
@@ -1415,6 +1436,12 @@ namespace FanucSimulator
 
         private void MoveTo(double targetX, double targetZ, bool rapid)
         {
+            // G96: a feed move sets out at the speed for the diameter it starts from (the spindle ramps
+            // there during the cut), whether it's a plain G01 or a pass inside a canned cycle. Rapids
+            // leave the spindle alone.
+            if (!rapid && Modal.Spindle == SpindleMode.ConstantSurfaceSpeed && !_suppressMoveTimeAccumulation)
+                RecalculateCssSpeed();
+
             // Arcs do their own wait before their first chord (see ApplyArcMotion).
             if (!rapid && !_suppressMoveTimeAccumulation)
                 WaitForSpindleArrival();
@@ -1587,7 +1614,8 @@ namespace FanucSimulator
             // change along the cut. Each piece is its own timeline event; the carve itself happens in
             // FlushCarve - at once, or when a chained cut is settled.
             static double Lerp(double a, double b, double f) => f >= 1 ? b : a + (b - a) * f;
-            var held = new PendingCarve { Kind = carve, Z1 = carveZ1, X1 = carveX1, Z2 = carveZ2, X2 = carveX2, NoseRadius = carveNose };
+            var held = new PendingCarve { Kind = carve, Z1 = carveZ1, X1 = carveX1, Z2 = carveZ2, X2 = carveX2, NoseRadius = carveNose,
+                                          SpindleStopped = !rapid && SpindleTargetRpm == 0, Line = _currentLine };
             for (int k = 0; k < plan.Pieces.Count; k++)
             {
                 var piece = plan.Pieces[k];
@@ -1683,6 +1711,10 @@ namespace FanucSimulator
         // nose on past every inside corner, gouging the next face by its radius.
         private sealed class PendingCarve
         {
+            // The spindle was commanded stopped when this cut was made - a crash on the machine (a
+            // program that forgot to restart it after M00, say). Checked when the carve lands.
+            public bool SpindleStopped;
+            public int Line;
             public CarveKind Kind;
             public double Z1, X1, Z2, X2, NoseRadius;
             public readonly List<(double F0, double F1, double Ra, TimelineEvent? Event)> Pieces = new();
@@ -1836,6 +1868,8 @@ namespace FanucSimulator
             _compChain.Clear();
         }
 
+        private int _stoppedSpindleWarnedLine = -1;
+
         private void FlushCarve(PendingCarve carve)
         {
             if (carve.Kind == CarveKind.None)
@@ -1850,17 +1884,23 @@ namespace FanucSimulator
                 var (z1, x1) = first ? (carve.Z1, carve.X1) : (Lerp(carve.Z1, carve.Z2, f0), Lerp(carve.X1, carve.X2, f0));
                 var (z2, x2) = (Lerp(carve.Z1, carve.Z2, f1), Lerp(carve.X1, carve.X2, f1));
 
+                var removed = false;
                 if (carve.NoseRadius > 0)
                 {
                     if (carve.Kind == CarveKind.Outer)
-                        Stock.CarveOuterNose(z1, x1, z2, x2, carve.NoseRadius, ra);
+                        removed = Stock.CarveOuterNose(z1, x1, z2, x2, carve.NoseRadius, ra);
                     else
-                        Stock.CarveInnerNose(z1, x1, z2, x2, carve.NoseRadius, ra);
+                        removed = Stock.CarveInnerNose(z1, x1, z2, x2, carve.NoseRadius, ra);
                 }
                 else if (carve.Kind == CarveKind.Outer)
-                    Stock.CarveOuter(z1, x1, z2, x2, ra, first, last);
+                    removed = Stock.CarveOuter(z1, x1, z2, x2, ra, first, last);
                 else if (carve.Kind == CarveKind.Inner)
-                    Stock.CarveInner(z1, x1, z2, x2, ra, first, last);
+                    removed = Stock.CarveInner(z1, x1, z2, x2, ra, first, last);
+                if (removed && carve.SpindleStopped && _stoppedSpindleWarnedLine != carve.Line)
+                {
+                    Warnings.Add($"CUTTING WITH THE SPINDLE STOPPED on line {carve.Line} - the tool is feeding into material with no M03/M04 in effect (after an M00 or M05?)");
+                    _stoppedSpindleWarnedLine = carve.Line;
+                }
 
                 if (ev != null)
                 {

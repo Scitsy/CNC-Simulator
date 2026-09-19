@@ -59,13 +59,15 @@ namespace FanucSimulator
         // the outer boundary down to whatever the tool's edge swept through.
         // `ra` is the finish this cut leaves wherever it ends up being the surface. `reachStart` /
         // `reachEnd`: see Carve - false only where one cut has been split into pieces.
-        public void CarveOuter(double z1, double x1, double z2, double x2, double ra = double.NaN,
+        // Every carve returns whether it actually removed material (so a cut can be told from a
+        // feed move through air).
+        public bool CarveOuter(double z1, double x1, double z2, double x2, double ra = double.NaN,
                                bool reachStart = true, bool reachEnd = true) =>
             Carve(z1, x1, z2, x2, OuterX, OuterRa, ra, min: true, reachStart, reachEnd);
 
         // Material removed from the inside out (boring, drilling) - clamps the inner boundary up to
         // whatever diameter the tool opened.
-        public void CarveInner(double z1, double x1, double z2, double x2, double ra = double.NaN,
+        public bool CarveInner(double z1, double x1, double z2, double x2, double ra = double.NaN,
                                bool reachStart = true, bool reachEnd = true) =>
             Carve(z1, x1, z2, x2, InnerX, InnerRa, ra, min: false, reachStart, reachEnd);
 
@@ -74,19 +76,20 @@ namespace FanucSimulator
         // diameter, as everywhere here; the nose is a real circle, so the geometry is worked in radius
         // terms. This is what a turning or boring insert actually removes - the programmed point is
         // only the "imaginary tip", a corner the round nose never occupies.
-        public void CarveOuterNose(double z1, double x1, double z2, double x2, double noseRadius, double ra = double.NaN) =>
+        public bool CarveOuterNose(double z1, double x1, double z2, double x2, double noseRadius, double ra = double.NaN) =>
             CarveNose(z1, x1, z2, x2, noseRadius, OuterX, OuterRa, ra, outer: true);
 
-        public void CarveInnerNose(double z1, double x1, double z2, double x2, double noseRadius, double ra = double.NaN) =>
+        public bool CarveInnerNose(double z1, double x1, double z2, double x2, double noseRadius, double ra = double.NaN) =>
             CarveNose(z1, x1, z2, x2, noseRadius, InnerX, InnerRa, ra, outer: false);
 
-        private void CarveNose(double z1, double x1, double z2, double x2, double r, double[] profile, double[] finish, double ra, bool outer)
+        private bool CarveNose(double z1, double x1, double z2, double x2, double r, double[] profile, double[] finish, double ra, bool outer)
         {
+            var removed = false;
             var (ax, az, bx, bz) = (x1 / 2, z1, x2 / 2, z2);
             var zLo = Math.Max(Math.Min(az, bz) - r, ZStart);
             var zHi = Math.Min(Math.Max(az, bz) + r, ZEnd);
             if (zHi < zLo)
-                return;
+                return false;
 
             // The swept nose's edge facing the material is made of the two end circles and the
             // segment itself pushed out by r along its normal toward the material (-X for an OD cut,
@@ -131,6 +134,8 @@ namespace FanucSimulator
                     continue;
 
                 var xDia = Math.Max(0, 2 * deepest.Value);
+                if (outer ? xDia < profile[i] - 1e-9 : xDia > profile[i] + 1e-9)
+                    removed = true;
                 profile[i] = outer ? Math.Min(profile[i], xDia) : Math.Max(profile[i], xDia);
                 if (outer ? xDia <= profile[i] + 1e-9 : xDia >= profile[i] - 1e-9)
                     finish[i] = ra;
@@ -141,6 +146,7 @@ namespace FanucSimulator
                     else InnerX[i] = OuterX[i];
                 }
             }
+            return removed;
         }
 
         // Read-only check for rapid-move safety: does the straight segment from (z1,x1) to (z2,x2)
@@ -190,14 +196,15 @@ namespace FanucSimulator
         // recorded as several pieces (the finish changing along it), the joins between pieces must
         // not reach past - on a rising taper that would notch the surface at every join - so the
         // caller turns reachStart/reachEnd off there and only the cut's real ends reach.
-        private void Carve(double z1, double x1, double z2, double x2, double[] profile, double[] finish, double ra, bool min,
+        private bool Carve(double z1, double x1, double z2, double x2, double[] profile, double[] finish, double ra, bool min,
                            bool reachStart = true, bool reachEnd = true)
         {
             var zLo = Math.Max(Math.Min(z1, z2), ZStart);
             var zHi = Math.Min(Math.Max(z1, z2), ZEnd);
             if (zHi < zLo)
-                return; // segment entirely outside the stock (e.g. a clearance move past the face)
+                return false; // segment entirely outside the stock (e.g. a clearance move past the face)
 
+            var removed = false;
             var sameZ = Math.Abs(z2 - z1) < 1e-9;
             var reachLo = sameZ || (z1 <= z2 ? reachStart : reachEnd);
             var reachHi = sameZ || (z1 <= z2 ? reachEnd : reachStart);
@@ -221,6 +228,8 @@ namespace FanucSimulator
                     var t = Math.Clamp((SampleZ(i) - z1) / (z2 - z1), 0, 1);
                     x = x1 + t * (x2 - x1);
                 }
+                if (min ? x < profile[i] - 1e-9 : x > profile[i] + 1e-9)
+                    removed = true;
                 profile[i] = min ? Math.Min(profile[i], x) : Math.Max(profile[i], x);
 
                 // This cut is the surface here now (or re-cut it exactly, like a spring pass), so the
@@ -236,6 +245,7 @@ namespace FanucSimulator
                     else InnerX[i] = OuterX[i];
                 }
             }
+            return removed;
         }
     }
 }
