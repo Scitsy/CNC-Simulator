@@ -1836,6 +1836,13 @@ namespace FanucSimulator
         // converts programmed ones, rather than keeping a second copy of the 25.4 constant.
         public double ToMm(double value) => Modal.Units == UnitsMode.Inch ? value * InchToMm : value;
 
+        // The multiple repetitive cycles' unsigned P and Q words (G74/G75 pecks and steps, G76 thread
+        // height and depths) take no decimal point: they count in the least input increment, which is
+        // 0.001 mm under G21 but 0.0001 in under G20. So Q400 is 0.4 mm in a metric program and
+        // 0.040 in in an inch one. (They were once read as microns in both - found by checking an
+        // inch program's G75 against CIMCO Edit's Backplot.)
+        public double IncrementToMm(double value) => Modal.Units == UnitsMode.Inch ? value * 0.0001 * InchToMm : value / 1000.0;
+
         // Converts mm back to whatever the active unit is - for display, and for log strings that
         // must echo the number the operator actually programmed rather than the internal one.
         public double FromMm(double valueMm) => Modal.Units == UnitsMode.Inch ? valueMm / InchToMm : valueMm;

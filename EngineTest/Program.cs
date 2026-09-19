@@ -1969,5 +1969,32 @@ Console.WriteLine();
             "line-arc G42") == 1);
 }
 
+// ---- [91] Cycle P/Q words count in the least input increment of the active units ----
+{
+    Console.WriteLine("[91] G74/G75/G76 P and Q: 0.001mm under G21, 0.0001in under G20 (checked against CIMCO Edit)");
+    // The O0014 groove: G75 X1.90 Z-1.60 P400 Q400 from X2.40 Z-1.50, in inch. Q400 = 0.040in steps
+    // along Z (Z-1.50, -1.54, -1.58, -1.60); P400 = 0.040in per side = 0.080in on X per peck.
+    var sim = new LatheSimulator();
+    sim.Offsets.GetOrCreateTool(5).Type = ToolType.Grooving;
+    sim.RunProgram(new GCodeParser().Parse(
+        "G20\nG99\nT0505\nM03 S500\nG00 X2.40 Z-1.50\nG75 R0.02\nG75 X1.90 Z-1.60 P400 Q400 F0.004\nM30\n"));
+    var plungeZs = sim.LastTimeline!.Events
+        .Where(e => e.Kind == TimelineEventKind.Feed && e.Line == 7)
+        .Select(e => Math.Round(e.ToZ / 25.4, 4)).Distinct().OrderByDescending(z => z).ToList();
+    Check($"inch G75 Q400 steps 0.040in along Z: {string.Join(", ", plungeZs)}",
+        plungeZs.SequenceEqual(new[] { -1.50, -1.54, -1.58, -1.60 }));
+    var firstPeck = sim.LastTimeline!.Events.First(e => e.Kind == TimelineEventKind.Feed && e.Line == 7);
+    Check("inch G75 P400 pecks 0.040in per side: X2.40 -> X2.32",
+        Math.Abs(firstPeck.ToX / 25.4 - 2.32) < 1e-9);
+
+    // The same words in a metric program are thousandths of a mm.
+    var metric = new LatheSimulator();
+    metric.Offsets.GetOrCreateTool(5).Type = ToolType.Grooving;
+    metric.RunProgram(new GCodeParser().Parse(
+        "G21\nG99\nT0505\nM03 S500\nG00 X40 Z-10\nG75 R0.5\nG75 X30 Z-11 P1000 Q500 F0.05\nM30\n"));
+    var metricPeck = metric.LastTimeline!.Events.First(e => e.Kind == TimelineEventKind.Feed && e.Line == 7);
+    Check("metric G75 P1000 pecks 1mm per side: X40 -> X38", Math.Abs(metricPeck.ToX - 38) < 1e-9);
+}
+
 Console.WriteLine($"===== TOTAL: {pass} passed, {fail} failed =====");
 Environment.Exit(fail == 0 ? 0 : 1);

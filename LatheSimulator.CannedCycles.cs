@@ -68,7 +68,7 @@ namespace FanucSimulator
                 _threadFinishPasses = Math.Max(1, raw);
             }
             if (block.Params.TryGetValue("Q", out var qRaw))
-                _threadMinDepthOfCut = Math.Max(0.005, Math.Abs(qRaw) / 1000.0);
+                _threadMinDepthOfCut = Math.Max(0.005, IncrementToMm(Math.Abs(qRaw)));
 
             Messages.Add($"G76: Threading cycle setup, {_threadFinishPasses} finish pass(es), {_threadTipAngle:F0}deg tip, min depth {Len(_threadMinDepthOfCut)}{LenUnit}");
         }
@@ -252,8 +252,8 @@ namespace FanucSimulator
 
             // Radial infeed only - doesn't model compound-angle (flank) infeed direction.
             var taper = block.Params.TryGetValue("R", out var rVal) ? ToMm(rVal) : 0;
-            var threadHeight = block.Params.TryGetValue("P", out var pVal) ? Math.Abs(pVal) / 1000.0 : 0;
-            var firstCutDepth = block.Params.TryGetValue("Q", out var qVal) ? Math.Abs(qVal) / 1000.0 : 0.1;
+            var threadHeight = block.Params.TryGetValue("P", out var pVal) ? IncrementToMm(Math.Abs(pVal)) : 0;
+            var firstCutDepth = block.Params.TryGetValue("Q", out var qVal) ? IncrementToMm(Math.Abs(qVal)) : 0.1;
             var lead = block.Params.TryGetValue("Feed", out var f) ? f : FeedRate;
 
             if (threadHeight <= 1e-9)
@@ -352,12 +352,11 @@ namespace FanucSimulator
                 return;
             }
 
-            // Q and P are always in microns (1/1000 mm) on a real Fanuc control, regardless of
-            // G20/G21 - the same well-known quirk as G75's P/Q.
-            var peckZ = block.Params.TryGetValue("Q", out var qVal) ? Math.Abs(qVal) / 1000.0 : 0.5;
+            // Q and P take no decimal point: they count in the least input increment (IncrementToMm).
+            var peckZ = block.Params.TryGetValue("Q", out var qVal) ? IncrementToMm(Math.Abs(qVal)) : 0.5;
             // P is a radial shift (per side, confirmed by the machine's owner 2026-09-18), so it
             // moves the diameter X by twice as much.
-            var stepX = 2 * (block.Params.TryGetValue("P", out var pVal) ? Math.Abs(pVal) / 1000.0 : 0.0);
+            var stepX = 2 * (block.Params.TryGetValue("P", out var pVal) ? IncrementToMm(Math.Abs(pVal)) : 0.0);
             var retract = block.Params.TryGetValue("R", out var rVal) ? Math.Abs(ToMm(rVal)) : _drillingRetract;
             var feed = block.Params.TryGetValue("Feed", out var f) ? f : FeedRate;
 
@@ -407,14 +406,13 @@ namespace FanucSimulator
                 return;
             }
 
-            // P and Q are always in microns (1/1000 mm) on a real Fanuc control, regardless of
-            // G20/G21 - a well-known quirk of these two address words in canned cycles.
+            // P and Q take no decimal point: they count in the least input increment (IncrementToMm).
             // P (peck depth) and R (retract) are X-direction distances given per side - radial, not
             // diametric (confirmed by the machine's owner 2026-09-18) - so each moves the diameter X
             // by twice its value. Q steps along Z and applies as it is.
-            var peckRadial = block.Params.TryGetValue("P", out var pVal) ? Math.Abs(pVal) / 1000.0 : 0.5;
+            var peckRadial = block.Params.TryGetValue("P", out var pVal) ? IncrementToMm(Math.Abs(pVal)) : 0.5;
             var peckX = 2 * peckRadial;
-            var stepZ = block.Params.TryGetValue("Q", out var qVal) ? Math.Abs(qVal) / 1000.0 : 0.0;
+            var stepZ = block.Params.TryGetValue("Q", out var qVal) ? IncrementToMm(Math.Abs(qVal)) : 0.0;
             var retract = 2 * (block.Params.TryGetValue("R", out var rVal) ? Math.Abs(ToMm(rVal)) : _groovingRetract);
             var feed = block.Params.TryGetValue("Feed", out var f) ? f : FeedRate;
 
