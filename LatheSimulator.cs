@@ -381,6 +381,10 @@ namespace FanucSimulator
         // offset jump itself. Null only before the very first move of the run.
         private (double X, double Z)? _lastActualRenderPos = null;
 
+        // Whether the last real move ran under nose-radius comp - so the move that switches it on or
+        // off can start from where the tool actually is (see MoveTo).
+        private bool _lastMoveCompensated;
+
         // The three operator-panel switches that genuinely change how a program runs. They are
         // panel state, not program state: a real control keeps them set across runs and RESET, and
         // nothing in the G-code can turn them on or off, which is why they live here as plain
@@ -1459,6 +1463,15 @@ namespace FanucSimulator
             var joinsChain = compActive && !rapid;
             if (!joinsChain)
                 FlushCompChain();
+
+            // Switching comp on or off: the move starts from where the tool really is, so the nose
+            // offset is taken up (G41/G42) or given back (G40) along this move - a straight line into
+            // or out of the offset, as the control does it. Starting from the move's own offset (or
+            // un-offset) point instead made the tool jump by the nose offset between two moves.
+            if (hasDirection && compActive != _lastMoveCompensated && _lastActualRenderPos is { } actual)
+                (fromRenderX, fromRenderZ) = actual;
+            if (hasDirection)
+                _lastMoveCompensated = compActive;
 
             CompSegment? segment = null;
             if (joinsChain)

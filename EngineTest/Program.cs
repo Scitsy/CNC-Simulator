@@ -1921,7 +1921,9 @@ Console.WriteLine();
         Math.Abs(odC - programmedC - 2 * R * (2 - Math.Sqrt(2))) < 1e-6);
     Check("no comp: the straight turn after it is exact (X30)", Math.Abs(OdAt(chamfer, -12, out _) - 30) < 1e-6);
 
-    var chamferComp = Cut("G00 X20 Z2\nG01 Z0 F0.1\nG42\nX30 Z-5\nZ-20\nG40\nG00 X52");
+    // G42 switched on during an approach move, as it should be: the move after G42 takes up the
+    // offset along its length, so it mustn't be the chamfer itself.
+    var chamferComp = Cut("G00 X16 Z2\nG42\nG01 X20 Z0 F0.1\nX30 Z-5\nZ-20\nG40\nG00 X52");
     Check("G42: the same chamfer comes out on the programmed line",
         Math.Abs(OdAt(chamferComp, -2.5, out var zC2) - 2 * (10 + (-zC2))) < 1e-6);
 
@@ -2051,6 +2053,30 @@ Console.WriteLine();
         passes.Count == expected.Count && passes.Zip(expected).All(t => Math.Abs(t.First.X - t.Second.Item1) < 0.0015 && Math.Abs(t.First.Z - t.Second.Item2) < 0.0015));
     // G42 left on makes no difference: threading runs the tool as a sharp point.
     Check("G42 left active doesn't offset a threading cycle (zero nose radius assumed)", Passes("G42\n").SequenceEqual(passes));
+}
+
+// ---- [94] Switching nose comp on and off: the offset is taken up / given back along a move ----
+{
+    Console.WriteLine("[94] G42 / G40: the tool moves into and out of the offset, never jumps");
+    // Per the machine's owner: G40 cancels compensation at the end of its own line. On a line of
+    // its own, the next move starts from the offset position and ends at the programmed point.
+    var sim = new LatheSimulator { StockDiameter = 50, StockLength = 60 };
+    sim.ResetStockProfile();
+    sim.RunProgram(new GCodeParser().Parse(
+        "G21\nG99\nT0101\nM03 S1000\nG00 X40 Z2\nG42\nG01 X30 Z0 F0.1\nZ-20\nX44\nG40\nG00 X52 Z2\nM30\n"));
+    var jumps = 0;
+    for (int i = 2; i + 1 < sim.ToolPath.Count; i += 2)
+        if (Math.Abs(sim.ToolPath[i].X - sim.ToolPath[i - 1].X) + Math.Abs(sim.ToolPath[i].Z - sim.ToolPath[i - 1].Z) > 1e-9)
+            jumps++;
+    Check($"the drawn path is continuous through G42 and G40 ({jumps} jump(s))", jumps == 0);
+    var last = sim.ToolPath[^1];
+    Check("after G40 the retract ends exactly at the programmed point (X52 Z2)",
+        Math.Abs(last.X - 52) < 1e-9 && Math.Abs(last.Z - 2) < 1e-9);
+    var retractStart = sim.ToolPath[^2];
+    Check("...and starts from where the compensated tool stood, not the un-offset corner",
+        Math.Abs(retractStart.X - 44) > 0.1 || Math.Abs(retractStart.Z - (-20)) > 0.1);
+    Check("the turned diameter under G42 is exact (X30 at Z-10)",
+        Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -10)] - 30) < 1e-6);
 }
 
 Console.WriteLine($"===== TOTAL: {pass} passed, {fail} failed =====");
