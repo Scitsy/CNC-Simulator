@@ -372,9 +372,6 @@ namespace FanucSimulator
 
         private int _activeOffsetNumber = 0;
 
-        // The previous comp-active segment's offset line (a point on it + its direction), used to
-        // miter this segment's corner against it. Null when there's nothing to join to.
-        private (double X, double Z, double Dx, double Dz)? _pendingCompLine = null;
 
         // Where the tool actually last ended up, in render coordinates. A tool change alone doesn't
         // move anything, but it does change which offset gets added to the (unchanged) logical X/Z -
@@ -430,6 +427,7 @@ namespace FanucSimulator
             }
 
             var (exit, next) = RunBlockRange(blocks, startIndex, isTopLevel: true);
+            FlushCompChain(); // the last cut's end won't be moved now
             if (exit != BlockRangeExit.Paused)
                 ReportSurfaceFinish();
 
@@ -697,18 +695,18 @@ namespace FanucSimulator
                 case 28:
                     break; // handled in ExecuteBlock
                 case 40:
+                    FlushCompChain();
                     Modal.Comp = CutterComp.Off;
-                    _pendingCompLine = null;
                     Messages.Add("G40: Tool nose radius compensation cancel");
                     break;
                 case 41:
+                    FlushCompChain();
                     Modal.Comp = CutterComp.Left;
-                    _pendingCompLine = null;
                     Messages.Add("G41: Tool nose radius compensation left");
                     break;
                 case 42:
+                    FlushCompChain();
                     Modal.Comp = CutterComp.Right;
-                    _pendingCompLine = null;
                     Messages.Add("G42: Tool nose radius compensation right");
                     break;
                 case 50:
@@ -1079,7 +1077,7 @@ namespace FanucSimulator
 
             _activeOffsetNumber = block.Params.TryGetValue("Offset", out var off) ? (int)off : CurrentTool;
             var offset = Offsets.GetOrCreateTool(_activeOffsetNumber);
-            _pendingCompLine = null; // new tool may carry a different nose radius - don't miter across the swap
+            FlushCompChain(); // new tool may carry a different nose radius - don't join cuts across the swap
 
             // The new tool's geometry offset differs from the old one's, so the last tracked render
             // position was computed under a now-stale offset - checking the next rapid against it would
@@ -1438,46 +1436,38 @@ namespace FanucSimulator
             var workOffsetX = workOffset?.X ?? 0;
             var workOffsetZ = workOffset?.Z ?? 0;
 
-            var fromRenderX = X + offset.TotalX + compDx + workOffsetX;
-            var fromRenderZ = Z + offset.TotalZ + compDz + workOffsetZ;
-            var toRenderX = targetX + offset.TotalX + compDx + workOffsetX;
-            var toRenderZ = targetZ + offset.TotalZ + compDz + workOffsetZ;
+            // A round-nosed tool: the render point (what the canvas draws and the offsets measure) is
+            // the imaginary tip; the cut is made by the nose around its centre, `nose` away. With comp
+            // on, the comp offset above puts the nose CENTRE on the contour's offset path (so the nose
+            // just touches the contour), and the tip sits `nose` back from that.
+            var nose = NoseCentreOffset(offset);
+            var (noseDx, noseDz) = nose is { } n ? (n.Dx * 2, n.Dz) : (0.0, 0.0); // X as a diameter
+            var (tipShiftX, tipShiftZ) = compActive && nose != null ? (-noseDx, -noseDz) : (0.0, 0.0);
 
-            // Miter this segment's corner against the previous comp-active segment by intersecting
-            // their offset lines, instead of leaving each segment's independently-offset endpoints
-            // unconnected. A rapid breaks the chain (real cutter comp only blends between successive
-            // cutting moves), and an extreme direction reversal falls back to the plain offset point
-            // rather than a huge miter spike (no arc insertion for reflex corners).
-            if (compActive && !rapid && _pendingCompLine.HasValue)
+            var fromRenderX = X + offset.TotalX + compDx + workOffsetX + tipShiftX;
+            var fromRenderZ = Z + offset.TotalZ + compDz + workOffsetZ + tipShiftZ;
+            var toRenderX = targetX + offset.TotalX + compDx + workOffsetX + tipShiftX;
+            var toRenderZ = targetZ + offset.TotalZ + compDz + workOffsetZ + tipShiftZ;
+
+            // Under nose-radius compensation, successive cuts are joined where their offset paths meet
+            // (see JoinCompChain) and held until nothing later can move them. Any other move ends the
+            // chain: carve what it held first, so the stock is right before this move looks at it.
+            var joinsChain = compActive && !rapid;
+            if (!joinsChain)
+                FlushCompChain();
+
+            CompSegment? segment = null;
+            if (joinsChain)
             {
-                var (px, pz, pdx, pdz) = _pendingCompLine.Value;
-                // Intersected in radius terms, like the directions; the corner goes back to a diameter.
-                var corner = IntersectLines(px / 2, pz, pdx, pdz, fromRenderX / 2, fromRenderZ, ndx, ndz);
-                if (corner.HasValue)
+                segment = new CompSegment
                 {
-                    var cornerX = corner.Value.X * 2;
-                    var cornerZ = corner.Value.Z;
-                    var spike = Math.Sqrt(Math.Pow((cornerX - fromRenderX) / 2, 2) + Math.Pow(cornerZ - fromRenderZ, 2));
-                    if (spike <= offset.NoseRadius * 5)
-                    {
-                        var lastIndex = ToolPath.Count - 1;
-                        if (lastIndex >= 0)
-                            ToolPath[lastIndex] = (cornerX, cornerZ, ToolPath[lastIndex].Type);
-
-                        // Keep the playback timeline's drawing in step with ToolPath. Only the drawn
-                        // end point moves - that segment's carve already happened un-mitered.
-                        if (_lastMotionEvent != null)
-                        {
-                            _lastMotionEvent.ToRenderX = cornerX;
-                            _lastMotionEvent.ToRenderZ = cornerZ;
-                        }
-
-                        fromRenderX = cornerX;
-                        fromRenderZ = cornerZ;
-                    }
-                }
+                    AX = fromRenderX, AZ = fromRenderZ, BX = toRenderX, BZ = toRenderZ,
+                    NoseDx = noseDx, NoseDz = noseDz, ToolPathIndex = ToolPath.Count,
+                };
+                JoinCompChain(segment, offset.NoseRadius);
             }
 
+            // Drawn as programmed-and-offset for now; a chained cut's points are settled at flush.
             ToolPath.Add((fromRenderX, fromRenderZ, rapid ? "rapid" : "feed"));
             ToolPath.Add((toRenderX, toRenderZ, rapid ? "rapid" : "feed"));
 
@@ -1488,7 +1478,13 @@ namespace FanucSimulator
                 // than this segment's own from-point, so a tool change's offset jump can't mask a real
                 // commanded move into the part; only skipped before the very first move of the run.
                 var (checkFromX, checkFromZ) = _lastActualRenderPos ?? (fromRenderX, fromRenderZ);
-                if (_lastActualRenderPos.HasValue && Stock.IntersectsMaterial(checkFromZ, checkFromX, toRenderZ, toRenderX))
+                // A round-nosed tool is checked by its nose, not the imaginary tip it never occupies:
+                // the nose centre's path, allowing the nose radius on top of the usual tolerance.
+                var hitsStock = nose is { } rn
+                    ? Stock.IntersectsMaterial(checkFromZ + noseDz, checkFromX + noseDx, toRenderZ + noseDz, toRenderX + noseDx,
+                                               tolerance: 0.3 + offset.NoseRadius)
+                    : Stock.IntersectsMaterial(checkFromZ, checkFromX, toRenderZ, toRenderX);
+                if (_lastActualRenderPos.HasValue && hitsStock)
                 {
                     // Not a machine alarm - a real control has no way to know this happened. Goes to
                     // Warnings (message log only), never Alarms (ALARM screen / ALM badge).
@@ -1501,8 +1497,15 @@ namespace FanucSimulator
             // What this segment carves, recorded exactly as passed to StockProfile so playback can
             // replay it faithfully.
             var carve = CarveKind.None;
-            double carveZ1 = 0, carveX1 = 0, carveZ2 = 0, carveX2 = 0;
-            if (!rapid)
+            double carveZ1 = 0, carveX1 = 0, carveZ2 = 0, carveX2 = 0, carveNose = 0;
+            if (!rapid && nose != null)
+            {
+                // Turning and boring: the round nose, swept along its centre's path.
+                carve = offset.Type == ToolType.IdBoring ? CarveKind.Inner : CarveKind.Outer;
+                (carveZ1, carveX1, carveZ2, carveX2) = (fromRenderZ + noseDz, fromRenderX + noseDx, toRenderZ + noseDz, toRenderX + noseDx);
+                carveNose = offset.NoseRadius;
+            }
+            else if (!rapid)
             {
                 // Carve the stock profile along the same segment just rendered. An Undefined-type
                 // active tool has no known geometry to carve with (same "don't guess" stance as the
@@ -1528,27 +1531,21 @@ namespace FanucSimulator
             }
 
             // One piece normally; several while the spindle is still ramping, so the finish can
-            // change along the cut. Each piece carves its own stretch and is its own timeline event;
-            // only the cut's real ends reach past into the next sample (see StockProfile.Carve).
+            // change along the cut. Each piece is its own timeline event; the carve itself happens in
+            // FlushCarve - at once, or when a chained cut is settled.
             static double Lerp(double a, double b, double f) => f >= 1 ? b : a + (b - a) * f;
+            var held = new PendingCarve { Kind = carve, Z1 = carveZ1, X1 = carveX1, Z2 = carveZ2, X2 = carveX2, NoseRadius = carveNose };
             for (int k = 0; k < plan.Pieces.Count; k++)
             {
                 var piece = plan.Pieces[k];
                 var (f0, f1) = (piece.FromFraction, piece.ToFraction);
                 var first = k == 0;
-                var last = k == plan.Pieces.Count - 1;
-                var (pz1, px1) = (Lerp(carveZ1, carveZ2, f0), Lerp(carveX1, carveX2, f0));
-                var (pz2, px2) = (Lerp(carveZ1, carveZ2, f1), Lerp(carveX1, carveX2, f1));
-                if (first)
-                    (pz1, px1) = (carveZ1, carveX1);
-
-                if (carve == CarveKind.Outer)
-                    Stock.CarveOuter(pz1, px1, pz2, px2, piece.Ra, first, last);
-                else if (carve == CarveKind.Inner)
-                    Stock.CarveInner(pz1, px1, pz2, px2, piece.Ra, first, last);
 
                 if (_timeline == null)
+                {
+                    held.Pieces.Add((f0, f1, piece.Ra, null));
                     continue;
+                }
 
                 // Inside an arc, the chords' time is provisional - ApplyArcMotion rescales them so
                 // they share the arc's exact duration, the same number the cycle-time clock gets.
@@ -1568,11 +1565,6 @@ namespace FanucSimulator
                     FromZ = first ? Z : Lerp(Z, targetZ, f0),
                     ToX = Lerp(X, targetX, f1),
                     ToZ = Lerp(Z, targetZ, f1),
-                    Carve = carve,
-                    CarveZ1 = pz1, CarveX1 = px1, CarveZ2 = pz2, CarveX2 = px2,
-                    CarveRa = piece.Ra,
-                    CarveReachStart = first,
-                    CarveReachEnd = last,
                     FeedOverrideApplies = feedOverrideApplies,
                     Line = _currentLine,
                     State = CaptureState(piece.StartRpm),
@@ -1583,6 +1575,23 @@ namespace FanucSimulator
                 _timeline.Events.Add(ev);
                 _timeline.Duration += piece.Seconds;
                 _lastMotionEvent = ev;
+                held.Pieces.Add((f0, f1, piece.Ra, ev));
+            }
+
+            if (segment != null)
+            {
+                segment.Carve = held;
+                segment.Type = rapid ? "rapid" : "feed";
+                _compChain.Add(segment);
+                while (_compChain.Count > CompLookBack)
+                {
+                    SettleCompSegment(_compChain[0]);
+                    _compChain.RemoveAt(0);
+                }
+            }
+            else
+            {
+                FlushCarve(held);
             }
 
             // The spindle keeps turning (and ramping) through every move, rapids included.
@@ -1590,14 +1599,227 @@ namespace FanucSimulator
 
             _lastActualRenderPos = (toRenderX, toRenderZ);
 
-            _pendingCompLine = (compActive && !rapid) ? (fromRenderX, fromRenderZ, ndx, ndz) : null;
-
             X = targetX;
             Z = targetZ;
         }
 
+        // Left and right of the direction of travel, seen the way G02/G03 are (Z to the right, X up):
+        // cutting an OD toward the chuck (-Z), G42 puts the tool on the +X side and G41 on the -X side
+        // - so OD turning is G42 and ID boring G41, the FANUC standard. (The two were once swapped
+        // here, the same X-toward-Z mix-up the arcs had.) In radius terms; returns (dX, dZ).
         private static (double Dx, double Dz) ComputeCompOffset(double ndx, double ndz, double radius, CutterComp comp) =>
-            comp == CutterComp.Left ? (-ndz * radius, ndx * radius) : (ndz * radius, -ndx * radius);
+            comp == CutterComp.Left ? (ndz * radius, -ndx * radius) : (-ndz * radius, ndx * radius);
+
+        // Where a round-nosed tool's nose centre sits relative to its imaginary tip - the corner a
+        // sharp tool would have, which is what the offsets are measured to and what X/Z program. From
+        // the tip, the centre is one radius back into the tool on both axes: for an OD tool (FANUC tip
+        // direction 3) up in X and toward +Z; for a boring bar (tip 2) down in X and toward +Z. Null
+        // for tools whose cut isn't a round nose dragged along the part (grooving, threading, drills).
+        // Radius terms; returns (dX, dZ).
+        private static (double Dx, double Dz)? NoseCentreOffset(ToolOffset offset) =>
+            offset.NoseRadius <= 0 ? null
+            : offset.Type == ToolType.OdTurning ? (offset.NoseRadius, offset.NoseRadius)
+            : offset.Type == ToolType.IdBoring ? (-offset.NoseRadius, offset.NoseRadius)
+            : null;
+
+        // ---- Held carve ----
+        // Under nose-radius compensation, where one cut ends depends on the next: at an inside corner
+        // the nose has to stop short, where its offset path meets the next cut's (the miter below).
+        // So a compensated cut is carved only once the next move has fixed its end, or when anything
+        // else happens first (a rapid, comp off, the end of the run). Carving it straight away ran the
+        // nose on past every inside corner, gouging the next face by its radius.
+        private sealed class PendingCarve
+        {
+            public CarveKind Kind;
+            public double Z1, X1, Z2, X2, NoseRadius;
+            public readonly List<(double F0, double F1, double Ra, TimelineEvent? Event)> Pieces = new();
+        }
+
+        // One compensated cut in the chain: its tip path (X a diameter), which JoinCompChain may
+        // shorten, lengthen or collapse to a point, and everything drawn or carved from it.
+        private sealed class CompSegment
+        {
+            public double AX, AZ, BX, BZ;
+            public double NoseDx, NoseDz;           // tip -> nose centre, X as a diameter
+            public PendingCarve Carve = new();
+            public int ToolPathIndex;
+            public string Type = "feed";
+            // Swallowed by an inside corner: the offset path loops back over it, so the nose never
+            // cuts it - it stands at the corner for this move's time instead.
+            public bool Consumed;
+            public bool IsPoint => Math.Abs(AX - BX) < 1e-12 && Math.Abs(AZ - BZ) < 1e-12;
+        }
+
+        private readonly List<CompSegment> _compChain = new();
+
+        // How far back a new cut is checked for crossing the chain: enough for a whole tessellated
+        // arc (at most 120 chords at 3 degrees) to be swallowed by one corner, in practice far fewer.
+        private const int CompLookBack = 64;
+
+        // Parameters where two segments' lines cross, in radius terms: s along `a` (0 at its start,
+        // 1 at its end), t along the new one; null if parallel.
+        private static (double S, double T, double X, double Z)? CrossingParams(CompSegment a, CompSegment b)
+        {
+            var (px, pz) = (a.AX / 2, a.AZ);
+            var (rx, rz) = (a.BX / 2 - px, a.BZ - pz);
+            var (qx, qz) = (b.AX / 2, b.AZ);
+            var (sx, sz) = (b.BX / 2 - qx, b.BZ - qz);
+            var denom = rx * sz - rz * sx;
+            if (Math.Abs(denom) < 1e-12)
+                return null;
+            var (wx, wz) = (qx - px, qz - pz);
+            var ta = (wx * sz - wz * sx) / denom;
+            var tb = (wx * rz - wz * rx) / denom;
+            return (ta, tb, (px + ta * rx) * 2, pz + ta * rz);
+        }
+
+        // Joins a new compensated cut onto the chain, the way the control joins offset paths:
+        // - Inside corner: the new offset path crosses an earlier one. Both stop at the crossing, and
+        //   whatever lay between (e.g. the first chords of an arc meeting a straight line at an
+        //   inside corner) is swallowed - running the nose along it would gouge. Checked back along
+        //   the chain, not just against the last cut, because a single corner can swallow several.
+        // - The new cut lies wholly inside the corner (crossing past its own end): swallowed itself,
+        //   waiting where the chain ends until a later cut settles the corner.
+        // - Outside corner: the two offset lines are extended to meet (a miter), unless that spike
+        //   would be long (a near-reversal), in which case they are left unjoined.
+        private void JoinCompChain(CompSegment n, double noseRadius)
+        {
+            for (int j = _compChain.Count - 1; j >= Math.Max(0, _compChain.Count - CompLookBack); j--)
+            {
+                var seg = _compChain[j];
+                if (seg.Consumed || seg.IsPoint)
+                    continue;
+                if (CrossingParams(seg, n) is not { } hit)
+                    continue;
+                // The crossing may also sit a little before the new cut's own start - when everything
+                // since `seg` was swallowed, and the swallowed stretch ended between two cuts. The new
+                // cut is then extended back to it. Past a cut that still stands, only a true crossing
+                // of the new cut itself counts.
+                var onlySwallowedSince = true;
+                for (int k = j + 1; k < _compChain.Count && onlySwallowedSince; k++)
+                    onlySwallowedSince = _compChain[k].Consumed;
+                var backReach = hit.T >= 0 ? 0 : Math.Sqrt(Math.Pow((hit.X - n.AX) / 2, 2) + Math.Pow(hit.Z - n.AZ, 2));
+                var startsOk = hit.T >= -1e-9 || (onlySwallowedSince && j < _compChain.Count - 1 && backReach <= noseRadius * 5);
+                if (hit.S >= -1e-9 && hit.S <= 1 + 1e-9 && hit.T <= 1 + 1e-9 && startsOk)
+                {
+                    (seg.BX, seg.BZ) = (hit.X, hit.Z);
+                    for (int k = j + 1; k < _compChain.Count; k++)
+                    {
+                        var later = _compChain[k];
+                        later.Consumed = true;
+                        (later.AX, later.AZ, later.BX, later.BZ) = (hit.X, hit.Z, hit.X, hit.Z);
+                    }
+                    (n.AX, n.AZ) = (hit.X, hit.Z);
+                    return;
+                }
+            }
+
+            CompSegment? last = null;
+            for (int j = _compChain.Count - 1; j >= 0 && last == null; j--)
+                if (!_compChain[j].Consumed && !_compChain[j].IsPoint)
+                    last = _compChain[j];
+            if (last == null || CrossingParams(last, n) is not { } corner)
+                return;
+
+            if (corner.S >= -1e-9 && corner.S <= 1 + 1e-9 && corner.T > 1)
+            {
+                n.Consumed = true;
+                (n.AX, n.AZ, n.BX, n.BZ) = (last.BX, last.BZ, last.BX, last.BZ);
+                return;
+            }
+
+            if (corner.S > 1 && corner.T < 0)
+            {
+                var spike = Math.Sqrt(Math.Pow((corner.X - last.BX) / 2, 2) + Math.Pow(corner.Z - last.BZ, 2));
+                if (spike <= noseRadius * 5)
+                {
+                    (last.BX, last.BZ) = (corner.X, corner.Z);
+                    (n.AX, n.AZ) = (corner.X, corner.Z);
+                }
+            }
+        }
+
+        // A chained cut whose ends can no longer move: its drawing and timeline take its final
+        // path, and it is carved (or, if swallowed, not).
+        private void SettleCompSegment(CompSegment seg)
+        {
+            static double Lerp(double a, double b, double f) => f >= 1 ? b : a + (b - a) * f;
+            if (seg.ToolPathIndex + 1 < ToolPath.Count)
+            {
+                ToolPath[seg.ToolPathIndex] = (seg.AX, seg.AZ, ToolPath[seg.ToolPathIndex].Type);
+                ToolPath[seg.ToolPathIndex + 1] = (seg.BX, seg.BZ, ToolPath[seg.ToolPathIndex + 1].Type);
+            }
+            foreach (var (f0, f1, _, ev) in seg.Carve.Pieces)
+            {
+                if (ev == null)
+                    continue;
+                (ev.FromRenderX, ev.FromRenderZ) = f0 <= 0 ? (seg.AX, seg.AZ) : (Lerp(seg.AX, seg.BX, f0), Lerp(seg.AZ, seg.BZ, f0));
+                (ev.ToRenderX, ev.ToRenderZ) = (Lerp(seg.AX, seg.BX, f1), Lerp(seg.AZ, seg.BZ, f1));
+            }
+
+            if (seg.Consumed)
+            {
+                seg.Carve.Kind = CarveKind.None;
+                foreach (var (_, _, _, ev) in seg.Carve.Pieces)
+                    if (ev != null)
+                        ev.Carve = CarveKind.None;
+                return;
+            }
+            if (seg.Carve.Kind == CarveKind.None)
+                return;
+            (seg.Carve.X1, seg.Carve.Z1) = (seg.AX + seg.NoseDx, seg.AZ + seg.NoseDz);
+            (seg.Carve.X2, seg.Carve.Z2) = (seg.BX + seg.NoseDx, seg.BZ + seg.NoseDz);
+            FlushCarve(seg.Carve);
+        }
+
+        private void FlushCompChain()
+        {
+            if (_compChain.Count == 0)
+                return;
+            foreach (var seg in _compChain)
+                SettleCompSegment(seg);
+            var end = _compChain[^1];
+            _lastActualRenderPos = (end.BX, end.BZ);
+            _compChain.Clear();
+        }
+
+        private void FlushCarve(PendingCarve carve)
+        {
+            if (carve.Kind == CarveKind.None)
+                return;
+
+            static double Lerp(double a, double b, double f) => f >= 1 ? b : a + (b - a) * f;
+            for (int k = 0; k < carve.Pieces.Count; k++)
+            {
+                var (f0, f1, ra, ev) = carve.Pieces[k];
+                var first = k == 0;
+                var last = k == carve.Pieces.Count - 1;
+                var (z1, x1) = first ? (carve.Z1, carve.X1) : (Lerp(carve.Z1, carve.Z2, f0), Lerp(carve.X1, carve.X2, f0));
+                var (z2, x2) = (Lerp(carve.Z1, carve.Z2, f1), Lerp(carve.X1, carve.X2, f1));
+
+                if (carve.NoseRadius > 0)
+                {
+                    if (carve.Kind == CarveKind.Outer)
+                        Stock.CarveOuterNose(z1, x1, z2, x2, carve.NoseRadius, ra);
+                    else
+                        Stock.CarveInnerNose(z1, x1, z2, x2, carve.NoseRadius, ra);
+                }
+                else if (carve.Kind == CarveKind.Outer)
+                    Stock.CarveOuter(z1, x1, z2, x2, ra, first, last);
+                else if (carve.Kind == CarveKind.Inner)
+                    Stock.CarveInner(z1, x1, z2, x2, ra, first, last);
+
+                if (ev != null)
+                {
+                    ev.Carve = carve.Kind;
+                    (ev.CarveZ1, ev.CarveX1, ev.CarveZ2, ev.CarveX2) = (z1, x1, z2, x2);
+                    ev.CarveNoseRadius = carve.NoseRadius;
+                    ev.CarveRa = ra;
+                    ev.CarveReachStart = first;
+                    ev.CarveReachEnd = last;
+                }
+            }
+        }
 
         // Intersection of two infinite 2D lines, each given as a point + direction vector.
         private static (double X, double Z)? IntersectLines(double x1, double z1, double dx1, double dz1, double x2, double z2, double dx2, double dz2)

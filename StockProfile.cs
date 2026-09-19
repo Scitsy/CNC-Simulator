@@ -69,6 +69,80 @@ namespace FanucSimulator
                                bool reachStart = true, bool reachEnd = true) =>
             Carve(z1, x1, z2, x2, InnerX, InnerRa, ra, min: false, reachStart, reachEnd);
 
+        // A round tool nose swept along a straight path: everything within `noseRadius` of the
+        // segment from the nose's centre at (z1, x1) to its centre at (z2, x2) is cut. X is a
+        // diameter, as everywhere here; the nose is a real circle, so the geometry is worked in radius
+        // terms. This is what a turning or boring insert actually removes - the programmed point is
+        // only the "imaginary tip", a corner the round nose never occupies.
+        public void CarveOuterNose(double z1, double x1, double z2, double x2, double noseRadius, double ra = double.NaN) =>
+            CarveNose(z1, x1, z2, x2, noseRadius, OuterX, OuterRa, ra, outer: true);
+
+        public void CarveInnerNose(double z1, double x1, double z2, double x2, double noseRadius, double ra = double.NaN) =>
+            CarveNose(z1, x1, z2, x2, noseRadius, InnerX, InnerRa, ra, outer: false);
+
+        private void CarveNose(double z1, double x1, double z2, double x2, double r, double[] profile, double[] finish, double ra, bool outer)
+        {
+            var (ax, az, bx, bz) = (x1 / 2, z1, x2 / 2, z2);
+            var zLo = Math.Max(Math.Min(az, bz) - r, ZStart);
+            var zHi = Math.Min(Math.Max(az, bz) + r, ZEnd);
+            if (zHi < zLo)
+                return;
+
+            // The swept nose's edge facing the material is made of the two end circles and the
+            // segment itself pushed out by r along its normal toward the material (-X for an OD cut,
+            // +X for a bore). At each sample, the deepest of those that reaches it is the new surface.
+            var (dx, dz) = (bx - ax, bz - az);
+            var length = Math.Sqrt(dx * dx + dz * dz);
+            var sign = outer ? -1.0 : 1.0; // which way is "into the material" in X
+            double nx = 0, nz = 0;
+            var hasLine = length > 1e-12 && Math.Abs(dz) > 1e-12;
+            if (hasLine)
+            {
+                (nx, nz) = (dz / length, -dx / length);
+                if (Math.Sign(nx) != Math.Sign(sign))
+                    (nx, nz) = (-nx, -nz);
+            }
+
+            var iLo = Math.Clamp((int)Math.Ceiling((zLo - ZStart) / (ZEnd - ZStart) * Resolution - 1e-9), 0, Resolution);
+            var iHi = Math.Clamp((int)Math.Floor((zHi - ZStart) / (ZEnd - ZStart) * Resolution + 1e-9), 0, Resolution);
+            for (int i = iLo; i <= iHi; i++)
+            {
+                var z = SampleZ(i);
+                double? deepest = null;
+                void Consider(double x)
+                {
+                    if (deepest == null || (outer ? x < deepest.Value : x > deepest.Value))
+                        deepest = x;
+                }
+
+                foreach (var (ex, ez) in new[] { (ax, az), (bx, bz) })
+                {
+                    var off = z - ez;
+                    if (Math.Abs(off) <= r)
+                        Consider(ex + sign * Math.Sqrt(r * r - off * off));
+                }
+                if (hasLine)
+                {
+                    var t = (z - az - r * nz) / dz;
+                    if (t >= 0 && t <= 1)
+                        Consider(ax + t * dx + r * nx);
+                }
+                if (deepest == null)
+                    continue;
+
+                var xDia = Math.Max(0, 2 * deepest.Value);
+                profile[i] = outer ? Math.Min(profile[i], xDia) : Math.Max(profile[i], xDia);
+                if (outer ? xDia <= profile[i] + 1e-9 : xDia >= profile[i] - 1e-9)
+                    finish[i] = ra;
+
+                if (OuterX[i] < InnerX[i])
+                {
+                    if (outer) OuterX[i] = InnerX[i];
+                    else InnerX[i] = OuterX[i];
+                }
+            }
+        }
+
         // Read-only check for rapid-move safety: does the straight segment from (z1,x1) to (z2,x2)
         // pass through remaining material anywhere along its length? A small tolerance keeps this
         // from firing on a legitimate near-flush approach or the sub-mm re-engagement a threading

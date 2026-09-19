@@ -24,8 +24,12 @@ runs real conditionals and loops, not just token substitution.
   or II picked from the P block as on the control, with its PS0064/PS0329 shape alarms), G74 peck
   drilling, G75 grooving (external and internal/ID), G76 threading (multi-pass, equal cutting area,
   spring passes), G32/G33 single-block threading, and G80 to cancel.
-- **Cutter nose radius compensation**: G41/G42/G40 - a true perpendicular-to-travel offset with
-  corner mitering, not a cosmetic flag.
+- **A real tool nose, and compensation for it**: turning and boring tools cut with their round
+  nose, not a point - the programmed position is the imaginary tip (FANUC tip direction 3 for OD
+  tools, 2 for boring bars). So, as on the machine, tapers and arcs cut without comp come out
+  oversize and inside corners keep a fillet of the nose radius. G42 (OD) / G41 (ID) put the nose on
+  the contour: offset paths are joined where they meet, and anything an inside corner swallows (such
+  as the start of an arc meeting a line) is skipped rather than gouged, the way the control does it.
 - **Work and tool offsets**: G54-G59 work coordinate systems, a full tool offset table (geometry +
   wear, X/Z) covering all 12 turret stations, all editable live on the OFFSET screen.
 - **Operator panel switches that actually do something**: SINGLE BLOCK steps one block per Cycle
@@ -129,7 +133,7 @@ A few worth starting with:
 ## Testing
 
 `EngineTest/` is a headless console harness (source-linked against the same engine files, no test
-framework dependency) with 370 hand-rolled assertions covering every documented G/M-code, both
+framework dependency) with 380 hand-rolled assertions covering every documented G/M-code, both
 canned-cycle directions, macro control flow, geometry checks against several of the demo programs
 above, the catalog-persistence round-trip, and exact closed-form cycle-time checks. Runs
 automatically on every push via GitHub Actions (see the badge at the top of this file).

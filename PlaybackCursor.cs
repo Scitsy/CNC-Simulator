@@ -342,7 +342,15 @@ namespace FanucSimulator
             var ra = ev.CarveRa;
             if (ev.FeedOverrideApplies && FinishScale != 1.0 && !double.IsNaN(ra))
                 ra = Math.Min(ra * FinishScale, MaxTrackedRa);
-            if (ev.Carve == CarveKind.Outer)
+            if (ev.CarveNoseRadius > 0)
+            {
+                // The nose is round: part-way, it has cut exactly as far as it has got, no reaching.
+                if (ev.Carve == CarveKind.Outer)
+                    Stock.CarveOuterNose(z1, x1, z2, x2, ev.CarveNoseRadius, ra);
+                else
+                    Stock.CarveInnerNose(z1, x1, z2, x2, ev.CarveNoseRadius, ra);
+            }
+            else if (ev.Carve == CarveKind.Outer)
                 Stock.CarveOuter(z1, x1, z2, x2, ra, reachStart, reachEnd);
             else
                 Stock.CarveInner(z1, x1, z2, x2, ra, reachStart, reachEnd);

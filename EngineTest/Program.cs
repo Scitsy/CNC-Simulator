@@ -403,7 +403,10 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
     var allAlarms = RunFull(sim, new GCodeParser().Parse(program), out var warnings);
     Console.WriteLine("[18] Assignment + expression substituted into a motion line");
     Check("no alarms", allAlarms.Count == 0);
-    Check("bore carved to X15 (10+5) at the face", Math.Abs(sim.Stock.InnerX[NearestIndex(sim.Stock, 0)] - 15) < 0.5);
+    // T3 is a boring bar with a 0.4 nose: its round nose, centred 0.4 back from the X15 tip on both
+    // axes, only just reaches the face as the move ends there - X15 - 2 x 0.4 = X14.2.
+    Check("bore carved to X14.2 at the face (X15 from the macro, less the nose's rounding)",
+        Math.Abs(sim.Stock.InnerX[NearestIndex(sim.Stock, 0)] - 14.2) < 1e-6);
 }
 
 // 19. IF/GOTO: branch taken vs not taken must reach genuinely different end states.
@@ -675,28 +678,27 @@ RegressionCheck("[14] Regression: stress_test.gcode (comprehensive OD/face/ID/gr
     Check("a later X/Z block is absolute, not incremental", Math.Abs(sim2.X - 8) < 0.01 && Math.Abs(sim2.Z - (-1)) < 0.01);
 }
 
-// 35. G41/G42/G40 cutter nose radius compensation: a substantial real feature (perpendicular-to-
-// travel offset + corner mitering, LatheSimulator.cs MoveTo) that had zero test coverage anywhere.
-// T1 (CNMG120404) has NoseRadius 0.4mm.
+// 35. G41/G42/G40 cutter nose radius compensation. T1 (CNMG120404) has NoseRadius 0.4mm and is an
+// OD tool (tip direction 3). Turning an OD toward the chuck, G42 is the right side: it puts the round
+// nose on the contour. G41 is the wrong side for an OD - it gouges by the nose's whole diameter.
 {
     var sim = new LatheSimulator();
     var program =
-        "G21\nT0101\nG00 X50 Z2\nG41\nG01 X30 Z2 F0.1\nG01 Z-10 F0.1\nG40\nG01 Z-11 F0.1\nG01 Z-20 F0.1\nM30\n";
+        "G21\nT0101\nG00 X50 Z2\nG42\nG01 X30 Z2 F0.1\nG01 Z-10 F0.1\nG40\nG01 Z-11 F0.1\nG01 Z-20 F0.1\nM30\n";
     var alarms = RunFull(sim, new GCodeParser().Parse(program), out _);
     Console.WriteLine("[35] G41/G42/G40 cutter nose radius compensation");
     Check("no alarms", alarms.Count == 0);
-    // 0.4mm per side is 0.8mm on the diameter.
-    Check("G41-active section (Z-5) offset OUTWARD by the 0.4mm nose radius: ~X30.8",
-        Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -5)] - 30.8) < 0.05);
-    Check("G40-cancelled section (Z-15) back to the exact programmed X30 (uncompensated)",
-        Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -15)] - 30.0) < 0.05);
+    Check("G42 (the OD side) cuts exactly on the programmed X30",
+        Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -5)] - 30.0) < 1e-6);
+    // A straight turn doesn't need comp: the nose's lowest point is level with the imaginary tip.
+    Check("G40-cancelled section (Z-15) is also X30 - straight turning is exact without comp",
+        Math.Abs(sim.Stock.OuterX[NearestIndex(sim.Stock, -15)] - 30.0) < 1e-6);
 
-    // G42 mirrors G41 - same magnitude, opposite direction.
     var sim2 = new LatheSimulator();
-    var program2 = "G21\nT0101\nG00 X50 Z2\nG42\nG01 X30 Z2 F0.1\nG01 Z-10 F0.1\nM30\n";
+    var program2 = "G21\nT0101\nG00 X50 Z2\nG41\nG01 X30 Z2 F0.1\nG01 Z-10 F0.1\nM30\n";
     RunFull(sim2, new GCodeParser().Parse(program2), out _);
-    Check("G42 offset INWARD by the same 0.4mm nose radius: ~X29.2",
-        Math.Abs(sim2.Stock.OuterX[NearestIndex(sim2.Stock, -5)] - 29.2) < 0.05);
+    Check("G41 on an OD (the wrong side) gouges by the nose diameter: X30 - 4 x 0.4 = X28.4",
+        Math.Abs(sim2.Stock.OuterX[NearestIndex(sim2.Stock, -5)] - 28.4) < 1e-6);
 }
 
 // 36. Work offset G54-G59: Modal.ActiveWorkOffset was tracked but never actually consulted when
@@ -1889,6 +1891,82 @@ Console.WriteLine();
     Check("dial turned mid-cut: the second half takes the new one", Math.Abs(RaAt(cursor.Stock, -35) - cutFull.CarveRa * 0.25) < 1e-9);
     Check("dial turned mid-cut: the shape is still exactly the engine's",
         Enumerable.Range(0, StockProfile.Resolution + 1).All(i => Math.Abs(cursor.Stock.OuterX[i] - full.Stock.OuterX[i]) < 1e-9));
+}
+
+// ---- [90] The tool's round nose: what a real insert cuts ----
+{
+    Console.WriteLine("[90] Nose radius: tapers and corners cut by a round nose, and what G42 does about it");
+    const double R = 0.4; // T1's nose
+
+    LatheSimulator Cut(string body, double stockDia = 50)
+    {
+        var s = new LatheSimulator { StockDiameter = stockDia, StockLength = 60, SpindleRampSeconds = 0 };
+        s.ResetStockProfile();
+        s.RunProgram(new GCodeParser().Parse("G21\nG99\nT0101\nM03 S1000\n" + body + "\nM30\n"));
+        return s;
+    }
+    double OdAt(LatheSimulator s, double z, out double sampleZ)
+    {
+        var i = NearestIndex(s.Stock, z);
+        sampleZ = s.Stock.SampleZ(i);
+        return s.Stock.OuterX[i];
+    }
+
+    // A 45-degree chamfer (X20 -> X30 over Z5) without comp: the nose leaves r(2 - sqrt2) on the
+    // radius - the classic reason for nose-radius comp.
+    var chamfer = Cut("G00 X20 Z2\nG01 Z0 F0.1\nX30 Z-5\nZ-20\nG00 X52");
+    var odC = OdAt(chamfer, -2.5, out var zC);
+    var programmedC = 2 * (10 + (-zC));
+    Check($"no comp: the 45-degree chamfer is left oversize by 2r(2 - sqrt2) = {2 * R * (2 - Math.Sqrt(2)):F4} on X",
+        Math.Abs(odC - programmedC - 2 * R * (2 - Math.Sqrt(2))) < 1e-6);
+    Check("no comp: the straight turn after it is exact (X30)", Math.Abs(OdAt(chamfer, -12, out _) - 30) < 1e-6);
+
+    var chamferComp = Cut("G00 X20 Z2\nG01 Z0 F0.1\nG42\nX30 Z-5\nZ-20\nG40\nG00 X52");
+    Check("G42: the same chamfer comes out on the programmed line",
+        Math.Abs(OdAt(chamferComp, -2.5, out var zC2) - 2 * (10 + (-zC2))) < 1e-6);
+
+    // An inside corner (turn X30 to Z-20, then up the shoulder to X44): the nose can't reach into
+    // it, leaving a fillet of its own radius - with or without comp.
+    var shoulder = Cut("G00 X30 Z2\nG01 Z-20 F0.1\nX44\nZ-30\nG00 X52");
+    var odS = OdAt(shoulder, -20 + R / 2, out var zS);
+    var filletX = 2 * (15 + R - Math.Sqrt(R * R - Math.Pow(zS - (-20 + R), 2)));
+    Check($"no comp: an inside corner keeps a R{R} fillet (X{filletX:F4} at Z{zS:F3})", Math.Abs(odS - filletX) < 1e-6);
+    Check("no comp: past the corner the shoulder face is clean - no gouge into it",
+        OdAt(shoulder, -20.3, out _) >= 44 - 1e-6);
+
+    var shoulderComp = Cut("G00 X30 Z2\nG42\nG01 Z-20 F0.1\nX44\nZ-30\nG40\nG00 X52");
+    Check("G42 inside corner: the nose stops at the corner - the shoulder face is not gouged",
+        OdAt(shoulderComp, -20.3, out _) >= 44 - 1e-6);
+    Check("G42 inside corner: the turned diameter is exact right up to the fillet",
+        Math.Abs(OdAt(shoulderComp, -19.2, out _) - 30) < 1e-6);
+
+    // A straight line into a non-tangent arc at an inside corner (the O0008 thread-blank shape): the
+    // arc's first chords lie wholly inside the corner and must be swallowed, not followed.
+    double Programmed(double z) =>
+        z >= -10 ? 14.6 + 0.06 * (-z)
+        : z >= -12.5 ? 2 * (7.136 + Math.Sqrt(Math.Max(0, 9 - Math.Pow(z + 12.964, 2))))
+        : 20.2;
+    var lineArc = Cut("G00 X14.6 Z2\nG42\nG01 Z0 F0.15\nX15.2 Z-10\nG03 X20.2 Z-12.5 R3\nG01 Z-44\nG40\nG00 X40", 22);
+    var worstGouge = 0.0;
+    for (int i = 0; i <= StockProfile.Resolution; i++)
+    {
+        var z = lineArc.Stock.SampleZ(i);
+        if (z < -40 || z > -0.2) continue;
+        worstGouge = Math.Min(worstGouge, lineArc.Stock.OuterX[i] - Programmed(z));
+    }
+    Check($"G42 line into an arc at an inside corner: no gouge beyond chord error (worst {worstGouge:F4})", worstGouge > -0.01);
+
+    // Rapids are checked by the real nose, not the imaginary tip: pulling straight out at the end of
+    // a pass (the tip level with the cut, the nose clear of it) is not a collision.
+    Check("pulling out at the end of a pass is not flagged as a collision", shoulder.Warnings.Count == 0);
+
+    // Playback replays the round-nose carves - held, trimmed and swallowed ones included - exactly.
+    var replay = new LatheSimulator { StockDiameter = 22, StockLength = 60, SpindleRampSeconds = 0 };
+    replay.ResetStockProfile();
+    Check("playback replays nose carves under G42 exactly",
+        CheckTimelinesThroughout(replay, new GCodeParser().Parse(
+            "G21\nG99\nT0101\nM03 S1000\nG00 X14.6 Z2\nG42\nG01 Z0 F0.15\nX15.2 Z-10\nG03 X20.2 Z-12.5 R3\nG01 Z-44\nG40\nG00 X40\nM30\n"),
+            "line-arc G42") == 1);
 }
 
 Console.WriteLine($"===== TOTAL: {pass} passed, {fail} failed =====");

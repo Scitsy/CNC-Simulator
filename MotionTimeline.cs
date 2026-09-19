@@ -26,8 +26,8 @@ namespace FanucSimulator
         // Render space - what the canvas draws: programmed position plus tool, wear and work offsets
         // and cutter comp. The "to" end can be moved after the fact by cutter-comp mitering, exactly
         // as LatheSimulator.ToolPath's own point is.
-        public double FromRenderX { get; init; }
-        public double FromRenderZ { get; init; }
+        public double FromRenderX { get; set; }
+        public double FromRenderZ { get; set; }
         public double ToRenderX { get; set; }
         public double ToRenderZ { get; set; }
 
@@ -40,18 +40,24 @@ namespace FanucSimulator
         // The carve actually performed, in StockProfile's own (z1, x1, z2, x2) argument order. These
         // deliberately are NOT the render endpoints: mitering rewrites the display point after the
         // carve has already happened with the un-mitered one.
-        public CarveKind Carve { get; init; }
-        public double CarveZ1 { get; init; }
-        public double CarveX1 { get; init; }
-        public double CarveZ2 { get; init; }
-        public double CarveX2 { get; init; }
+        // Settable: a cut under nose-radius compensation is only carved once the next move has
+        // fixed where its end corner is (see LatheSimulator.FlushPendingCarve).
+        public CarveKind Carve { get; set; }
+        public double CarveZ1 { get; set; }
+        public double CarveX1 { get; set; }
+        public double CarveZ2 { get; set; }
+        public double CarveX2 { get; set; }
+
+        // Above 0: the carve is a round tool nose of this radius swept along (CarveZ1, CarveX1) ->
+        // (CarveZ2, CarveX2), which is then the path of the nose's centre. 0: a point carve.
+        public double CarveNoseRadius { get; set; }
 
         // The finish (Ra, micrometres; NaN = not tracked) this carve leaves, and whether each end
         // reaches past into the next sample - false only at the joins of a cut split into pieces
         // because its finish changes along it (the spindle still getting up to speed).
-        public double CarveRa { get; init; } = double.NaN;
-        public bool CarveReachStart { get; init; } = true;
-        public bool CarveReachEnd { get; init; } = true;
+        public double CarveRa { get; set; } = double.NaN;
+        public bool CarveReachStart { get; set; } = true;
+        public bool CarveReachEnd { get; set; } = true;
 
         public int Line { get; init; }
         public MachineStateSnapshot State { get; init; }
